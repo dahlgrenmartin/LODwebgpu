@@ -10,18 +10,17 @@ import torch.nn as nn
 import flux2_lod_aot_probe as probe
 
 
-def test_level3_detector_is_lh_hl_band_psnr():
+def test_level3_detector_is_lh_hl_energy():
     det = probe.Sym4Level3Detector(channels=1)
     h = torch.full((1, 1, 2, 2), 2.0)
     v = torch.full((1, 1, 2, 2), 4.0)
     d = torch.full((1, 1, 2, 2), 100.0)
     det.bands = lambda x, bank=None: (h, v, d)
 
-    score = float(det(torch.zeros(1, 1, 2, 2)))
-    expected_energy = 0.5 * (h.square().mean() + v.square().mean())
-    expected = float(-10.0 * torch.log10(expected_energy + 1e-30))
+    energy = float(det(torch.zeros(1, 1, 2, 2)))
+    expected = float(0.5 * ((h * h).mean() + (v * v).mean()))
 
-    assert math.isclose(score, expected, rel_tol=0.0, abs_tol=1e-6)
+    assert math.isclose(energy, expected, rel_tol=0.0, abs_tol=1e-6)
 
 
 def test_joint_detector_receives_residual():
@@ -49,6 +48,6 @@ def test_joint_detector_receives_residual():
 
 
 if __name__ == "__main__":
-    test_level3_detector_is_lh_hl_band_psnr()
+    test_level3_detector_is_lh_hl_energy()
     test_joint_detector_receives_residual()
     print("detector reference tests passed")
