@@ -427,6 +427,81 @@ def clear_outputs(out_dir: Path) -> int:
     return removed
 
 
+def dedupe_external_data(out_dir: Path, location: str = "weights.bin",
+                         pattern: str = "lod_joint_*.onnx") -> dict:
+    """Collapse per-model copies of identical weights into one shared blob.
+
+    onnx.save APPENDS to an external-data file, so exporting N resolutions writes
+    N complete copies of the same decoder weights: the models still load, because
+    each points at its own byte range, but the file is N times larger than it
+    needs to be. Nothing in the model detects this, since every copy is valid.
+
+    Tensors are matched by content hash rather than by name. Sharing a name is
+    not evidence of sharing bytes, and merging two tensors that differ would
+    silently corrupt whichever model lost.
+    """
+    import hashlib
+
+    import onnx
+
+    out_dir = Path(out_dir)
+    blob_path = out_dir / location
+    if not blob_path.exists():
+        raise FileNotFoundError(blob_path)
+    blob = blob_path.read_bytes()
+
+    models = sorted(out_dir.glob(pattern))
+    if not models:
+        raise FileNotFoundError(f"no models matching {pattern} in {out_dir}")
+
+    def ext(init):
+        kv = {e.key: e.value for e in init.external_data}
+        if "offset" not in kv:
+            return None
+        return int(kv["offset"]), int(kv.get("length", 0))
+
+    # Pass 1: one entry per distinct content hash.
+    canonical: dict[str, tuple[int, int]] = {}
+    chunks: list[bytes] = []
+    cursor = 0
+    loaded = []
+    for path in models:
+        model = onnx.load(str(path), load_external_data=False)
+        loaded.append((path, model))
+        for init in model.graph.initializer:
+            span = ext(init)
+            if span is None:
+                continue
+            off, length = span
+            data = blob[off:off + length]
+            digest = hashlib.sha256(data).hexdigest()
+            if digest not in canonical:
+                canonical[digest] = (cursor, length)
+                chunks.append(data)
+                cursor += length
+
+    # Pass 2: repoint every model at the shared copy.
+    for path, model in loaded:
+        for init in model.graph.initializer:
+            span = ext(init)
+            if span is None:
+                continue
+            off, length = span
+            digest = hashlib.sha256(blob[off:off + length]).hexdigest()
+            new_off, new_len = canonical[digest]
+            for entry in init.external_data:
+                if entry.key == "offset":
+                    entry.value = str(new_off)
+                elif entry.key == "length":
+                    entry.value = str(new_len)
+        onnx.save(model, str(path))
+
+    blob_path.write_bytes(b"".join(chunks))
+    return {"models": len(loaded), "tensors": len(canonical),
+            "before_mb": len(blob) / 1048576,
+            "after_mb": cursor / 1048576}
+
+
 def write_manifest(out_dir: Path, resolutions: list, adam: dict) -> Path:
     for key in ("lr", "beta1", "beta2", "eps", "steps"):
         if key not in adam:

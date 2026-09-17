@@ -17,14 +17,15 @@ export class Display {
   constructor(
     private device: GPUDevice,
     private canvas: HTMLCanvasElement,
-    private size: number,
+    private width: number,
+    private height: number,
   ) {
     const ctx = canvas.getContext('webgpu');
     if (!ctx) throw new Error('canvas.getContext("webgpu") returned null');
     this.context = ctx;
     this.format = navigator.gpu.getPreferredCanvasFormat();
-    canvas.width = size;
-    canvas.height = size;
+    canvas.width = width;
+    canvas.height = height;
     ctx.configure({ device, format: this.format, alphaMode: 'opaque' });
 
     this.module = device.createShaderModule({ code: wgsl });
@@ -32,7 +33,7 @@ export class Display {
       size: 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(this.dims, 0, new Uint32Array([size, size, 0, 0]));
+    device.queue.writeBuffer(this.dims, 0, new Uint32Array([width, height, 0, 0]));
   }
 
   /** Build the pipeline, failing loudly on a WGSL compile error. */
@@ -55,7 +56,7 @@ export class Display {
     return this;
   }
 
-  /** Draw one frame from an NCHW fp32 buffer of shape [1,3,size,size]. */
+  /** Draw one frame from an NCHW fp32 buffer of shape [1,3,height,width]. */
   draw(image: GPUBuffer): void {
     if (!this.pipeline) throw new Error('Display.init() must be awaited before draw()');
     const bindGroup = this.device.createBindGroup({

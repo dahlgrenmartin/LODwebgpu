@@ -9,7 +9,7 @@
       if (!navigator.gpu) throw new Error('WebGPU unavailable');
       const adapter = await navigator.gpu.requestAdapter();
       const device = await adapter.requestDevice();
-      const r = await runKernelTests(device, '/models/kernel_golden.json');
+      const r = await runKernelTests(device, `${import.meta.env.BASE_URL}models/kernel_golden.json`.replace(/\/{2,}/g,'/'));
       window.__RESULTS__ = r;
       document.body.textContent = r.status + '\n\n' + r.results.map(x =>
         `${x.pass ? 'PASS' : 'FAIL'}  ${x.kernel.padEnd(12)} ${x.name.padEnd(30)} ` +

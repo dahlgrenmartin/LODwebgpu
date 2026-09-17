@@ -7,7 +7,9 @@ import { createBackend, type Backend, type BackendName } from './backends';
 import { bandPsnr, linearSlope } from './detectorMath';
 import { parseOptimizerConfig } from './optimizerConfig';
 
-const BASE = '/models';
+// Resolve against the deploy prefix: a GitHub project page serves the
+// site from /<repo>/, where an absolute '/models' 404s.
+const BASE = `${import.meta.env.BASE_URL}models`.replace(/\/{2,}/g, '/');
 const DETECTOR_WINDOW = 10;
 
 type State = 'boot' | 'loading' | 'ready' | 'encoding' | 'running' | 'done' | 'error';

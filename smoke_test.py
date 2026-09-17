@@ -412,6 +412,16 @@ def test_fp16_initializers_and_shared_external_data():
         def dtypes(path):
             m = onnx.load(str(path), load_external_data=False)
             return {i.name: i.data_type for i in m.graph.initializer}
+
+        def offsets(path):
+            m = onnx.load(str(path), load_external_data=False)
+            out = {}
+            for i in m.graph.initializer:
+                kv = {e.key: e.value for e in i.external_data}
+                if "offset" in kv:
+                    out[i.name] = (int(kv["offset"]), int(kv.get("length", 0)))
+            return out
+
         a, b = dtypes(p32), dtypes(p16)
         shared = set(a) & set(b)
         assert shared, "no initializer names shared between resolutions"
@@ -419,6 +429,37 @@ def test_fp16_initializers_and_shared_external_data():
             assert a[n] == b[n], f"{n}: dtype differs between resolutions"
         half = sum(1 for v in a.values() if v == onnx.TensorProto.FLOAT16)
         assert half > 0, "no fp16 initializers produced"
+
+        # Matching names and dtypes is NOT sharing. onnx.save appends, so each
+        # export writes its own copy and every model stays valid while the blob
+        # grows linearly; only equal offsets prove one copy is actually reused.
+        before = (d / "weights.bin").stat().st_size
+        from export.to_onnx import dedupe_external_data
+        report = dedupe_external_data(d)
+        oa, ob = offsets(p32), offsets(p16)
+        common = set(oa) & set(ob)
+        assert common, "no external initializers to compare"
+        # A private copy is only legitimate when the bytes genuinely differ;
+        # some constants are resolution-dependent despite sharing a name.
+        blob = (d / "weights.bin").read_bytes()
+        wasteful = []
+        for n in common:
+            if oa[n] == ob[n]:
+                continue
+            x = blob[oa[n][0]:oa[n][0] + oa[n][1]]
+            y = blob[ob[n][0]:ob[n][0] + ob[n][1]]
+            if x == y:
+                wasteful.append(n)
+        assert not wasteful, (
+            f"{len(wasteful)} identical initializers still hold private copies, "
+            f"e.g. {wasteful[:3]}")
+        distinct = len(common) - sum(1 for n in common if oa[n] == ob[n])
+        print(f"      {len(common) - distinct}/{len(common)} initializers shared; "
+              f"{distinct} genuinely differ by resolution")
+        after = (d / "weights.bin").stat().st_size
+        assert after < before, f"dedupe did not shrink the blob ({before} -> {after})"
+        print(f"      weights.bin {before/1048576:.1f} -> {after/1048576:.1f} MB, "
+              f"{len(common)} initializers at shared offsets")
         print(f"      {len(shared)}/{len(a)} initializers shared, {half} stored fp16")
         print(f"      graph files {[s // 1024 for s in sizes]} KiB, weights.bin "
               f"{(d / 'weights.bin').stat().st_size // 1024} KiB")

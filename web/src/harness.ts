@@ -2,7 +2,9 @@ import * as ort from 'onnxruntime-web/webgpu';
 import { loadManifest } from './manifest';
 import { createSession } from './session';
 
-const BASE = '/models';
+// Resolve against the deploy prefix: a GitHub project page serves the
+// site from /<repo>/, where an absolute '/models' 404s.
+const BASE = `${import.meta.env.BASE_URL}models`.replace(/\/{2,}/g, '/');
 // Relative, to match the Python suite, and sized to include the accepted fp16
 // weight-storage cost (measured 2026-09-17: grad_z 2.6e-03 at 128x128,
 // pred 1.6e-03).  The golden data comes from the fp32 PyTorch wrapper, so this
@@ -48,9 +50,12 @@ async function main() {
   const cases: Case[] = [];
   try {
     const manifest = await loadManifest(`${BASE}/manifest.json`);
-    const image = manifest.resolutions[0].image;
+    // Golden data is generated per square resolution, named by its side.
+    const res = manifest.resolutions.find((r) => r.width === r.height)
+      ?? manifest.resolutions[0];
+    const image = res.width;
     const golden = await loadGolden(image);
-    const runner = await createSession(manifest, image, BASE);
+    const runner = await createSession(manifest, res.width, res.height, BASE);
     const device = runner.device;
 
     const z = golden('z');
@@ -123,13 +128,20 @@ async function main() {
 
     // --- encoder-seeded latent init ---
     {
-      const { initLatent } = await import('./latentInit');
+      const { encodeLatent } = await import('./latentInit');
       const img = new Float32Array(1 * 3 * image * image).fill(0.25);
-      const { buffer, numel, shape } = await initLatent(
-        device, `${BASE}/encoder.onnx`, img, [1, 3, image, image],
+      const latent = await encodeLatent(
+        `${BASE}/encoder.onnx`, img, [1, 3, image, image],
         { factor: 1.0, shift: 0.0 },
         [{ path: manifest.encoderWeights,
          data: `${BASE}/${manifest.encoderWeights}` }]);
+      const numel = latent.data.length;
+      const shape = latent.shape;
+      const buffer = device.createBuffer({
+        size: latent.data.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      });
+      device.queue.writeBuffer(buffer, 0, latent.data);
       const expected = 32 * (image / 8) * (image / 8);
       cases.push({
         name: `latent init shape ${JSON.stringify(shape)}`,

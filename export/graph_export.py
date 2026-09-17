@@ -113,8 +113,13 @@ def _encode_arg(a, name_of):
     return _int_arg(a)
 
 
-def export_graph(gm, wrapper, out_dir: Path, name: str = "lod_graph") -> Path:
-    """Write <name>.json plus <name>.weights.bin."""
+def export_graph(gm, wrapper, out_dir: Path, name: str = "lod_graph",
+                 fp16: bool = True) -> Path:
+    """Write <name>.json plus <name>.weights.bin.
+
+    Weights are stored fp16 by default: it halves the download, and the
+    interpreter widens them to fp32 on upload so all arithmetic stays fp32.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -141,6 +146,8 @@ def export_graph(gm, wrapper, out_dir: Path, name: str = "lod_graph") -> Path:
             inputs.append({"name": kind, "node": name_of[n], "shape": shape})
         else:
             arr = buffers[key].detach().numpy().ravel().astype("<f4")
+            if fp16 and arr.size >= 1024 and np.isfinite(arr).all()                     and float(np.abs(arr).max()) <= 65504.0:
+                pass  # eligible; conversion happens once for the whole blob
             constants.append({"node": name_of[n], "offset": offset,
                               "numel": int(arr.size), "shape": shape})
             chunks.append(arr)
@@ -183,13 +190,20 @@ def export_graph(gm, wrapper, out_dir: Path, name: str = "lod_graph") -> Path:
     outputs = [name_of[a] if hasattr(a, "name") else None for a in out_node.args[0]]
 
     blob = out_dir / f"{name}.weights.bin"
-    blob.write_bytes(np.concatenate(chunks).tobytes() if chunks else b"")
+    flat = np.concatenate(chunks) if chunks else np.zeros(0, dtype="<f4")
+    # Storing fp16 is safe only if nothing overflows its range; the Sym4 loss
+    # divisor is ~1.5e5 and would become inf, which is how a whole graph turns
+    # into NaN. Fall back to fp32 for the whole blob if anything is out of range.
+    use_fp16 = bool(fp16 and flat.size and np.isfinite(flat).all()
+                    and float(np.abs(flat).max()) <= 65504.0)
+    blob.write_bytes(flat.astype("<f2").tobytes() if use_fp16 else flat.tobytes())
 
     doc = {
         "symbols": sorted(symbols),
         "inputs": inputs,
         "constants": constants,
         "weights": blob.name,
+        "weightsDtype": "float16" if use_fp16 else "float32",
         "nodes": nodes,
         "outputs": [{"name": nm, "label": lbl} for nm, lbl in
                     zip(outputs, ["loss", "pred", "score", "grad_z"])],

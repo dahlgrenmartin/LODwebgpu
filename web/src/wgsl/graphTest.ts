@@ -7,6 +7,17 @@ interface RefEntry { offset: number; count: number; shape: number[] }
  * Run the whole rewritten graph through the WGSL interpreter and compare against
  * the PyTorch golden tensors, the same ones the ORT-Web harness uses.
  */
+/**
+ * Budget for RMS-relative error against the fp32 PyTorch golden tensors.
+ *
+ * The weights blob is stored fp16 to stay under GitHub's 100 MB per-file limit,
+ * and that quantization is the dominant term. Measured 2026-09-17 at 512x512:
+ * with fp32 weights grad_z was 1.55e-3 and pred 2.14e-6; with fp16 they are
+ * 1.49e-2 and 4.99e-4. The threshold guards against regression, not against
+ * this known and accepted cost.
+ */
+const TOL_RMS = 3e-2;
+
 export async function runGraphTest(device: GPUDevice, base: string, image: number,
                                    trace = false) {
   const rt = await Runtime.create(device);
@@ -57,7 +68,7 @@ export async function runGraphTest(device: GPUDevice, base: string, image: numbe
     results.push({
       name: label, shape: t.shape.join('x'),
       relErr: rms, maxRel: maxAbs / Math.max(1e-20, maxVal),
-      pass: rms <= 5e-3,
+      pass: rms <= TOL_RMS,
     });
   }
   const passed = results.filter((r) => r.pass).length;

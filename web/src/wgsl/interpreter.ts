@@ -17,6 +17,8 @@ export interface GraphNode {
 }
 export interface GraphDoc {
   symbols: string[];
+  /** Storage precision of the weights blob; arithmetic is always fp32. */
+  weightsDtype?: 'float16' | 'float32';
   inputs: { name: 'z' | 'target'; node: string; shape: Expr[] }[];
   constants: { node: string; offset: number; numel: number; shape: Expr[] }[];
   weights: string;
@@ -25,6 +27,33 @@ export interface GraphDoc {
 }
 
 type Value = Tensor | number | Value[];
+
+/**
+ * Widen an fp16 weights blob to fp32.
+ *
+ * Via a 65536-entry table: there are only that many distinct half values, and a
+ * per-element bit decode over tens of millions of weights is noticeably slow.
+ */
+let halfTable: Float32Array | null = null;
+
+function widenFloat16(src: Uint16Array): Float32Array {
+  if (!halfTable) {
+    halfTable = new Float32Array(65536);
+    for (let h = 0; h < 65536; h++) {
+      const sign = h & 0x8000 ? -1 : 1;
+      const exp = (h & 0x7c00) >> 10;
+      const frac = h & 0x03ff;
+      halfTable[h] = exp === 0
+        ? sign * 6.103515625e-5 * (frac / 1024)
+        : exp === 0x1f
+          ? (frac ? NaN : sign * Infinity)
+          : sign * Math.pow(2, exp - 15) * (1 + frac / 1024);
+    }
+  }
+  const out = new Float32Array(src.length);
+  for (let i = 0; i < src.length; i++) out[i] = halfTable[src[i]];
+  return out;
+}
 
 const isTensor = (v: Value): v is Tensor =>
   typeof v === 'object' && v !== null && !Array.isArray(v) && 'buffer' in v;
@@ -97,7 +126,9 @@ export class Interpreter {
   static async load(rt: Runtime, jsonUrl: string, baseUrl: string): Promise<Interpreter> {
     const doc: GraphDoc = await fetch(jsonUrl).then((r) => r.json());
     const buf = await fetch(`${baseUrl}/${doc.weights}`).then((r) => r.arrayBuffer());
-    const data = new Float32Array(buf);
+    const data = doc.weightsDtype === 'float16'
+      ? widenFloat16(new Uint16Array(buf))
+      : new Float32Array(buf);
 
     // One buffer per constant rather than offsets into a single blob. Only the
     // gather kernel honours a source offset; conv, matmul, groupnorm and
