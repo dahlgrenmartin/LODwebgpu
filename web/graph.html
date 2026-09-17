@@ -8,10 +8,12 @@
     try {
       const { createMaxDevice } = await import('/src/wgsl/runtime.ts');
       const device = await createMaxDevice();
-      const man = await fetch(`${import.meta.env.BASE_URL}models/manifest.json`.replace(/\/{2,}/g,'/')).then(r => r.json());
+      const base = `${import.meta.env.BASE_URL}models`.replace(/\/{2,}/g, '/');
+      const man = await fetch(`${base}/manifest.json`).then(r => r.json());
+      const sq = man.resolutions.find(r => r.width === r.height);
+      if (!sq) throw new Error('no square resolution available to verify against');
       const trace = new URLSearchParams(location.search).has('trace');
-      const sq = man.resolutions.find(r => r.width === r.height) || man.resolutions[0];
-      const r = await runGraphTest(device, `${import.meta.env.BASE_URL}models`.replace(/\/{2,}/g,'/'), sq.width, trace);
+      const r = await runGraphTest(device, base, sq.width, trace);
       window.__RESULTS__ = r;
       document.body.textContent = `${r.status}  (${r.ms} ms)\n\n` + r.results.map(x =>
         `${x.pass ? 'PASS' : 'FAIL'}  ${x.name.padEnd(8)} ${x.shape.padEnd(16)} rms=${x.relErr.toExponential(2)} max=${x.maxRel.toExponential(2)}`
