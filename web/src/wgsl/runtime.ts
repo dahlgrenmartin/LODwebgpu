@@ -1,4 +1,5 @@
 import gatherSrc from './kernels/gather.wgsl?raw';
+import scatterSrc from './kernels/scatter.wgsl?raw';
 import elementwiseSrc from './kernels/elementwise.wgsl?raw';
 import reduceSrc from './kernels/reduce.wgsl?raw';
 import conv2dSrc from './kernels/conv2d.wgsl?raw';
@@ -8,7 +9,7 @@ import gnApplySrc from './kernels/groupnorm_apply.wgsl?raw';
 import matmulSrc from './kernels/matmul.wgsl?raw';
 import softmaxSrc from './kernels/softmax.wgsl?raw';
 import {
-  broadcastStrides, contiguousStrides, numel, padStrides, padTo,
+  broadcastStrides, contiguousStrides, isContiguous, numel, padStrides, padTo,
 } from './shapes';
 
 export const MAX_RANK = 8;
@@ -84,6 +85,7 @@ export class Runtime {
       label: 'unused-binding',
     });
     await rt.compile('gather', gatherSrc);
+    await rt.compile('scatter', scatterSrc);
     await rt.compile('elementwise', elementwiseSrc);
     await rt.compile('reduce', reduceSrc);
     await rt.compile('conv2d', conv2dSrc);
@@ -205,10 +207,29 @@ export class Runtime {
     this.device.queue.submit([enc.finish()]);
   }
 
-  /** Materialise `src` (read through `srcStrides`) into a contiguous `out`. */
+  /**
+   * Materialise `src` (read through `srcStrides`) into a contiguous `out`.
+   *
+   * When the source is already contiguous this is a straight run of elements,
+   * and the copy engine does it far faster than a shader can: the gather kernel
+   * evaluates rank-8 index arithmetic - eight integer divisions and modulos -
+   * for every element, and integer division is one of the slowest things a GPU
+   * does. aten::cat copies its slabs this way, and at 512x512 its eight nodes
+   * cost as much as all seventy-eight convolutions before this path existed.
+   */
   gather(src: Tensor, srcStrides: number[], outShape: number[], out: GPUBuffer,
          dstOffset = 0): void {
     const total = numel(outShape);
+
+    // copyBufferToBuffer cannot take one buffer as both source and destination.
+    if (total > 0 && src.buffer !== out && isContiguous(srcStrides, outShape)) {
+      const enc = this.device.createCommandEncoder();
+      enc.copyBufferToBuffer(
+        src.buffer, (src.offset ?? 0) * 4, out, dstOffset * 4, total * 4);
+      this.device.queue.submit([enc.finish()]);
+      return;
+    }
+
     const dims = [
       outShape.length, total,
       ...padTo(outShape, MAX_RANK, 1),
@@ -217,6 +238,39 @@ export class Runtime {
       dstOffset,
     ];
     this.run('gather', [
+      { binding: 0, resource: { buffer: this.i32Buffer(dims) } },
+      { binding: 1, resource: { buffer: src.buffer } },
+      { binding: 2, resource: { buffer: out } },
+    ], total);
+  }
+
+  /**
+   * Write the contiguous tensor `src` into `out` through `dstStrides`.
+   *
+   * The inverse of gather: one dispatch places a whole block inside a larger
+   * tensor, however the block is laid out in the destination.
+   */
+  scatter(src: Tensor, srcShape: number[], dstStrides: number[], out: GPUBuffer,
+          dstOffset = 0): void {
+    const total = numel(srcShape);
+    if (total === 0) return;
+
+    if (src.buffer !== out && isContiguous(dstStrides, srcShape)) {
+      const enc = this.device.createCommandEncoder();
+      enc.copyBufferToBuffer(
+        src.buffer, (src.offset ?? 0) * 4, out, dstOffset * 4, total * 4);
+      this.device.queue.submit([enc.finish()]);
+      return;
+    }
+
+    const dims = [
+      srcShape.length, total,
+      ...padTo(srcShape, MAX_RANK, 1),
+      ...padStrides(dstStrides, MAX_RANK),
+      src.offset ?? 0,
+      dstOffset,
+    ];
+    this.run('scatter', [
       { binding: 0, resource: { buffer: this.i32Buffer(dims) } },
       { binding: 1, resource: { buffer: src.buffer } },
       { binding: 2, resource: { buffer: out } },

@@ -364,6 +364,9 @@ export class Interpreter {
   /** Peak bytes the intermediate pool has had live, for leak diagnosis. */
   get poolPeakBytes(): number { return this.pool.peak; }
 
+  /** When set, GPU time is attributed per op name (serialises; debug only). */
+  opTimes: Map<string, { ms: number; n: number }> | null = null;
+
   /** When set, live pool bytes are recorded after each node (debug only). */
   profile: number[] | null = null;
 
@@ -408,6 +411,7 @@ export class Interpreter {
 
     for (let i = 0; i < this.doc.nodes.length; i++) {
       const node = this.doc.nodes[i];
+      const tNode = this.opTimes ? performance.now() : 0;
       try {
         this.values.set(node.name, this.exec(node));
       } catch (e) {
@@ -451,6 +455,16 @@ export class Interpreter {
       }
 
       if (this.profile) this.profile.push(this.pool.liveBytes);
+
+      if (this.opTimes) {
+        // Each node submits its own command buffer, so draining the queue here
+        // attributes GPU time to the node that caused it. This serialises the
+        // pipeline and inflates the total, but the breakdown is what is wanted.
+        await this.rt.device.queue.onSubmittedWorkDone();
+        const t1 = performance.now();
+        const prev = this.opTimes.get(node.op) ?? { ms: 0, n: 0 };
+        this.opTimes.set(node.op, { ms: prev.ms + (t1 - tNode), n: prev.n + 1 });
+      }
 
       // Recycle any buffer whose last consumer was this node.
       for (const [name, idx] of lastUse) {
@@ -603,18 +617,15 @@ export class Interpreter {
         if (d !== 0 && parts.some((p) => numel(p.shape) === 0)) {
           throw new Error('cat with empty parts is not supported');
         }
+        // One dispatch per part, writing through the output's strides. Copying
+        // the contiguous runs instead needs one dispatch per row once the cat
+        // dimension is not the outermost, and the detector pads along the last
+        // two dimensions: ~4600 dispatches for a single node at 512x512.
+        const outStrides = contiguousStrides(shape);
         let written = 0;
-        const outer = shape.slice(0, d).reduce((x, y) => x * y, 1);
-        const innerOut = shape.slice(d).reduce((x, y) => x * y, 1);
         for (const p of parts) {
-          const innerP = p.shape.slice(d).reduce((x, y) => x * y, 1);
-          // Copy each outer slab into its stripe of the output.
-          for (let o = 0; o < outer; o++) {
-            this.rt.gather(
-              { ...p, offset: (p.offset ?? 0) + o * innerP, shape: [innerP] },
-              [1], [innerP], out, o * innerOut + written);
-          }
-          written += innerP;
+          this.rt.scatter(p, p.shape, outStrides, out, written * outStrides[d]);
+          written += p.shape[d];
         }
         return result;
       }

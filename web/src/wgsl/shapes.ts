@@ -88,3 +88,21 @@ export function padTo(arr: number[], rank: number, fill = 1): number[] {
 export function padStrides(arr: number[], rank: number): number[] {
   return padTo(arr, rank, 0);
 }
+
+/**
+ * Whether `strides` address `shape` as one unbroken run of elements.
+ *
+ * A dimension of extent 1 is addressed exactly once, so its stride never
+ * matters. A stride of 0 on an extent greater than 1 is a broadcast: the same
+ * element is read repeatedly, which is not a run and must not become a copy.
+ */
+export function isContiguous(strides: number[], shape: number[]): boolean {
+  if (strides.length !== shape.length) return false;
+  let expect = 1;
+  for (let i = shape.length - 1; i >= 0; i--) {
+    if (shape[i] === 1) continue;
+    if (strides[i] !== expect) return false;
+    expect *= shape[i];
+  }
+  return true;
+}

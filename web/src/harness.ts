@@ -135,7 +135,12 @@ async function main() {
         { factor: 1.0, shift: 0.0 },
         [{ path: manifest.encoderWeights,
            data: `${BASE}/${manifest.encoderWeights}` }]);
-      const expected = 32 * (image / 8) * (image / 8);
+      // The latent channel count comes from the manifest: it is 32 for the
+      // FLUX.2 decoder and 4 for the SDXL one, and hardcoding either makes this
+      // assert the wrong size for the other model.
+      const latentChannels = manifest.latentChannels;
+      if (latentChannels === undefined) throw new Error('manifest has no latentChannels');
+      const expected = latentChannels * (image / 8) * (image / 8);
       cases.push({
         name: `latent init shape ${JSON.stringify(latent.shape)}`,
         maxAbs: Math.abs(latent.data.length - expected),

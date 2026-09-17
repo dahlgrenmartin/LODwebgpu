@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>WGSL soak</title></head>
+<body style="font:13px ui-monospace,Consolas,monospace;white-space:pre-wrap;padding:16px;background:#0f1115;color:#e6e9ef">running&hellip;
+<script type="module">
+  import { Runtime, createMaxDevice } from '/src/wgsl/runtime.ts';
+  import { Interpreter } from '/src/wgsl/interpreter.ts';
+
+  const q = new URLSearchParams(location.search);
+  const steps = Number(q.get('steps') ?? 30);
+  const log = [];
+  const say = (s) => { log.push(s); document.body.textContent = log.join('\n'); };
+
+  (async () => {
+    try {
+      const device = await createMaxDevice();
+      device.lost.then(i => { say(`DEVICE LOST: ${i.reason} ${i.message}`); window.__DONE__ = true; });
+      const base = `${import.meta.env.BASE_URL}models`.replace(/\/{2,}/g, '/');
+      const man = await fetch(`${base}/manifest.json`).then(r => r.json());
+      const W = Number(q.get('size') ?? man.resolutions[0].width);
+      const H = Number(q.get('h') ?? W);
+      const C = man.latentChannels;
+      // Synthetic inputs: the soak measures residency and stability, not values,
+      // and golden fixtures exist for only a few sizes.
+      const rand = (n, seed) => { const a = new Float32Array(n); let s = seed; for (let i = 0; i < n; i++) { s = (s * 1664525 + 1013904223) >>> 0; a[i] = (s / 4294967296) * 2 - 1; } return a; };
+
+      const rt = await Runtime.create(device);
+      const interp = await Interpreter.load(rt, `${base}/lod_graph.json`, base);
+      const up = (data, shape) => { const b = rt.alloc(data.length); rt.device.queue.writeBuffer(b, 0, data); return { buffer: b, shape }; };
+      const zShape = [1, C, H / 8, W / 8];
+      const tShape = [1, 3, H, W];
+      const z = up(rand(zShape.reduce((a, b) => a * b), 1), zShape);
+      const target = up(rand(tShape.reduce((a, b) => a * b), 2), tShape);
+
+      say(`soak: ${steps} steps at ${W}x${H}`);
+      if (q.has('profile')) {
+        interp.profile = [];
+        await interp.run(z, target);
+        const prof = interp.profile;
+        interp.profile = null;
+        const peak = Math.max(...prof);
+        const at = prof.indexOf(peak);
+        const doc = await fetch(`${base}/lod_graph.json`).then(r => r.json());
+        const around = [];
+        for (let i = Math.max(0, at - 4); i < Math.min(prof.length, at + 5); i++) {
+          around.push(`  node ${i} ${doc.nodes[i].op} -> ${(prof[i] / 1048576).toFixed(0)} MB`);
+        }
+        window.__PROFILE__ = { peakMb: +(peak / 1048576).toFixed(0), at, n: prof.length,
+          curve: prof.filter((_, i) => i % 32 === 0).map(v => Math.round(v / 1048576)), around };
+        say([`peak ${(peak / 1048576).toFixed(0)} MB at node ${at}/${prof.length}`, ...around].join(String.fromCharCode(10)));
+      }
+      if (q.has('ops')) {
+        await interp.run(z, target);                 // warm up
+        interp.opTimes = new Map();
+        const tAll0 = performance.now();
+        await interp.run(z, target);
+        const tAll = performance.now() - tAll0;
+        const rows2 = [...interp.opTimes].map(([op, v]) => ({ op, ms: +v.ms.toFixed(1), n: v.n }))
+          .sort((a, b) => b.ms - a.ms);
+        interp.opTimes = null;
+        window.__OPS__ = { totalMs: Math.round(tAll), rows: rows2 };
+        say([`serialised total ${Math.round(tAll)} ms`,
+          ...rows2.slice(0, 14).map(r => `  ${String(r.ms).padStart(8)} ms  n=${String(r.n).padStart(4)}  ${r.op}`)]
+          .join(String.fromCharCode(10)));
+      }
+      const rows = [];
+      for (let i = 0; i < steps; i++) {
+        const t0 = performance.now();
+        const out = await interp.run(z, target);
+        const loss = (await rt.read(out.loss.buffer, 1))[0];
+        const ms = performance.now() - t0;
+        rows.push({ step: i, ms: Math.round(ms), loss, allocs: rt.allocCount, mb: +(rt.allocBytes / 1048576).toFixed(1), poolPeakMb: +(interp.poolPeakBytes / 1048576).toFixed(1) });
+        say(`step ${String(i).padStart(2)}  ${String(Math.round(ms)).padStart(5)} ms  loss=${loss.toFixed(5)}  allocs=${rt.allocCount}  ${(rt.allocBytes / 1048576).toFixed(1)} MB`);
+        window.__ROWS__ = rows;
+      }
+      window.__RESULTS__ = { status: 'OK', rows };
+    } catch (e) {
+      window.__RESULTS__ = { status: 'ERROR', error: String(e.message || e) };
+      say('ERROR ' + (e.stack || e));
+    }
+    window.__DONE__ = true;
+  })();
+</script>
+</body>
+</html>
