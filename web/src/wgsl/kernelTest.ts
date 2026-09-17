@@ -3,7 +3,8 @@ import { broadcastShape, contiguousStrides, numel } from './shapes';
 
 interface TensorJson { shape: number[]; data: number[] }
 interface Case {
-  kernel: 'gather' | 'elementwise' | 'reduce';
+  kernel: 'gather' | 'elementwise' | 'reduce' | 'conv2d' | 'groupnorm'
+        | 'matmul' | 'softmax';
   name: string;
   expected: TensorJson;
   src?: TensorJson;
@@ -15,7 +16,19 @@ interface Case {
   expand?: number[];
   slice?: { dim: number; start: number; end: number };
   dims?: number[];
-  mean?: boolean;
+  mean?: boolean | TensorJson;
+  weight?: TensorJson | null;
+  bias?: TensorJson | null;
+  stride?: number[];
+  padding?: number[];
+  dilation?: number[];
+  groups?: number;
+  transposed?: boolean;
+  N?: number; C?: number; HxW?: number; G?: number; eps?: number;
+  B?: number; M?: number; K?: number;
+  biasIsRowVector?: boolean;
+  dim?: number;
+  rstd?: TensorJson;
 }
 
 interface Result { name: string; kernel: string; maxAbs: number; pass: boolean; error?: string }
@@ -65,9 +78,46 @@ async function runCase(rt: Runtime, c: Case): Promise<Result> {
       const b = c.b ? upload(rt, c.b) : null;
       const outShape = b ? broadcastShape(a.shape, b.shape) : a.shape;
       rt.elementwise(c.op!, a, b, c.scalar ?? 0, outShape, out);
+    } else if (c.kernel === 'reduce') {
+      const src = upload(rt, c.src!);
+      rt.reduce(src, c.dims!, c.mean === true, out);
+    } else if (c.kernel === 'conv2d') {
+      const src = upload(rt, c.src!);
+      const w = upload(rt, c.weight!);
+      const outShape = c.expected.shape;
+      rt.conv2d(src, w, null, {
+        stride: c.stride!, padding: c.padding!, dilation: c.dilation!,
+        transposed: !!c.transposed, groups: c.groups!, outShape,
+      }, out);
+    } else if (c.kernel === 'groupnorm') {
+      const src = upload(rt, c.src!);
+      const w = c.weight ? upload(rt, c.weight) : null;
+      const bi = c.bias ? upload(rt, c.bias) : null;
+      const ng = c.N! * c.G!;
+      const meanBuf = rt.alloc(ng);
+      const rstdBuf = rt.alloc(ng);
+      rt.groupNorm(src, w, bi, c.N!, c.C!, c.HxW!, c.G!, c.eps!,
+                   out, meanBuf, rstdBuf);
+      // Statistics are separate graph outputs, so verify them too.
+      const gotMean = await rt.read(meanBuf, ng);
+      const gotRstd = await rt.read(rstdBuf, ng);
+      const statErr = Math.max(maxAbs(gotMean, (c as any).mean.data),
+                               maxAbs(gotRstd, c.rstd!.data));
+      if (statErr > TOL) {
+        return { ...base, maxAbs: statErr, pass: false,
+                 error: `mean/rstd mismatch ${statErr.toExponential(2)}` };
+      }
+    } else if (c.kernel === 'matmul') {
+      const a = upload(rt, c.a!);
+      const b = upload(rt, c.b!);
+      const bi = c.bias ? upload(rt, c.bias) : null;
+      rt.matmul(a, b, bi, {
+        B: c.B!, M: c.M!, K: c.K!, N: (c as any).N,
+        biasIsRowVector: !!c.biasIsRowVector,
+      }, out);
     } else {
       const src = upload(rt, c.src!);
-      rt.reduce(src, c.dims!, !!c.mean, out);
+      rt.softmax(src, c.dim!, out);
     }
 
     const got = await rt.read(out, outCount);

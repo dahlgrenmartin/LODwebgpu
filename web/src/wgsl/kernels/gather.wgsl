@@ -8,6 +8,7 @@
 //   [2 .. 9]  output shape (right-aligned to MAX_RANK)
 //   [10..17]  input strides, in elements (0 means broadcast)
 //   [18]      input base offset, in elements
+//   [19]      output base offset, in elements (cat writes into a slice)
 
 const MAX_RANK : u32 = 8u;
 
@@ -32,5 +33,5 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     rem = rem / extent;
     offset = offset + i32(coord) * dims[10 + i32(d)];
   }
-  dst[i] = src[u32(offset)];
+  dst[u32(dims[19]) + i] = src[u32(offset)];
 }

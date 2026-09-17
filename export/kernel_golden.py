@@ -75,7 +75,67 @@ def build_cases() -> list[dict]:
         cases.append({"kernel": "reduce", "name": f"mean dims={dims}",
                       "dims": dims, "mean": True, "src": _t(r),
                       "expected": _t(r.mean(dim=dims, keepdim=True))})
+
+    # --- convolution ------------------------------------------------------
+    def conv_case(name, xs, ws, stride, pad, dil, groups, transposed):
+        x = torch.randn(*xs)
+        w = torch.randn(*ws)
+        y = torch.ops.aten.convolution(
+            x, w, None, list(stride), list(pad), list(dil), transposed,
+            [0, 0], groups)
+        return {"kernel": "conv2d", "name": name, "src": _t(x), "weight": _t(w),
+                "stride": list(stride), "padding": list(pad), "dilation": list(dil),
+                "groups": groups, "transposed": transposed,
+                "expected": _t(y)}
+
+    cases.append(conv_case("conv3x3 pad1", (1, 4, 7, 9), (6, 4, 3, 3),
+                           (1, 1), (1, 1), (1, 1), 1, False))
+    cases.append(conv_case("conv1x1", (1, 5, 4, 6), (3, 5, 1, 1),
+                           (1, 1), (0, 0), (1, 1), 1, False))
+    cases.append(conv_case("conv grouped stride2 k8", (1, 3, 28, 30), (9, 1, 8, 8),
+                           (2, 2), (0, 0), (1, 1), 3, False))
+    cases.append(conv_case("convT 3x3 pad1", (1, 6, 7, 9), (6, 4, 3, 3),
+                           (1, 1), (1, 1), (1, 1), 1, True))
+    cases.append(conv_case("convT grouped stride2", (1, 9, 11, 12), (9, 1, 8, 8),
+                           (2, 2), (0, 0), (1, 1), 3, True))
+
+    # --- group norm -------------------------------------------------------
+    for affine in (True, False):
+        N, C, H, W, G = 1, 8, 5, 4, 4
+        x = torch.randn(N, C, H, W)
+        wt = torch.randn(C) if affine else None
+        bs = torch.randn(C) if affine else None
+        out, mean, rstd = torch.ops.aten.native_group_norm(
+            x, wt, bs, N, C, H * W, G, 1e-5)
+        cases.append({"kernel": "groupnorm",
+                      "name": f"groupnorm affine={affine}",
+                      "src": _t(x), "N": N, "C": C, "HxW": H * W, "G": G,
+                      "eps": 1e-5,
+                      "weight": _t(wt) if affine else None,
+                      "bias": _t(bs) if affine else None,
+                      "expected": _t(out), "mean": _t(mean), "rstd": _t(rstd)})
+
+    # --- matmul -----------------------------------------------------------
+    a2 = torch.randn(4, 5); b2 = torch.randn(5, 3)
+    cases.append({"kernel": "matmul", "name": "mm", "a": _t(a2), "b": _t(b2),
+                  "B": 1, "M": 4, "K": 5, "N": 3, "expected": _t(a2 @ b2)})
+    ab = torch.randn(2, 4, 5); bb = torch.randn(2, 5, 3)
+    cases.append({"kernel": "matmul", "name": "bmm", "a": _t(ab), "b": _t(bb),
+                  "B": 2, "M": 4, "K": 5, "N": 3, "expected": _t(torch.bmm(ab, bb))})
+    bias = torch.randn(3)
+    cases.append({"kernel": "matmul", "name": "addmm row-vector bias",
+                  "a": _t(a2), "b": _t(b2), "bias": _t(bias), "biasIsRowVector": True,
+                  "B": 1, "M": 4, "K": 5, "N": 3,
+                  "expected": _t(torch.addmm(bias, a2, b2))})
+
+    # --- softmax ----------------------------------------------------------
+    sm = torch.randn(2, 6, 7)
+    for dim in (-1, 1):
+        cases.append({"kernel": "softmax", "name": f"softmax dim={dim}",
+                      "src": _t(sm), "dim": dim,
+                      "expected": _t(torch.softmax(sm, dim=dim))})
     return cases
+
 
 
 def write(out_dir: Path) -> Path:
