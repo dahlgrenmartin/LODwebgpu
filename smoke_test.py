@@ -333,6 +333,28 @@ def test_rewrite_repopulates_meta():
     print(f"      all {total} call_function nodes have meta['val']")
 
 
+@test
+def test_export_wrapper_matches_graph():
+    """Wrapper with 2 inputs reproduces the lifted graph's outputs exactly."""
+    sys.path.insert(0, str(ROOT))
+    from export.wrap import ExportWrapper
+
+    torch.manual_seed(11)
+    m = probe.JointLOD("sym4").eval()
+    z = torch.randn(1, 32, 2, 2, requires_grad=True)
+    t = torch.randn(1, 3, 16, 16)
+    gm, sig = aot_export_module(m, (z, t), trace_joint=True, output_loss_index=0)
+    args = _placeholder_args(gm, sig, m, z.detach(), t)
+    with torch.no_grad():
+        ref = gm(*args)
+        got = ExportWrapper(gm, sig, m)(z.detach(), t)
+    assert len(ref) == len(got) == 4, f"{len(ref)} vs {len(got)}"
+    for i, (a, b) in enumerate(zip(ref, got)):
+        err = (a - b).abs().max().item()
+        assert err == 0.0, f"output[{i}] differs by {err:.3e}"
+    print("      4 outputs identical; wrapper exposes 2 inputs")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only run tests whose name contains this")
