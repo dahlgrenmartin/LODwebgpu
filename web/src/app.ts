@@ -40,6 +40,7 @@ let manifest: Manifest;
 let backend: Backend | null = null;
 let display: Display | null = null;
 let busy = false;
+let watchedDevice: GPUDevice | null = null;
 
 function setState(state: State, message: string): void {
   els.status.textContent = message;
@@ -73,9 +74,21 @@ function readOptimizerConfig() {
 }
 
 function describeBackend(b: Backend): string {
-  return b.fixedSize
-    ? `ONNX Runtime Web — fixed ${b.fixedSize}x${b.fixedSize}`
-    : 'WGSL interpreter — any size divisible by 8';
+  if (b.supportedSizes) {
+    const sizes = b.supportedSizes.map((s) => `${s.width}x${s.height}`).join(', ');
+    return `ONNX Runtime Web — static graphs: ${sizes}`;
+  }
+  return 'WGSL interpreter — any size divisible by 8';
+}
+
+function watchDevice(device: GPUDevice): void {
+  if (device === watchedDevice) return;
+  watchedDevice = device;
+  device.lost.then((info) => {
+    if (watchedDevice !== device) return;
+    setState('error', `GPU device lost: ${info.reason}. Reload to restart.`);
+    setControlsEnabled(false);
+  });
 }
 
 function formatSlope(s: number): string {
@@ -88,15 +101,15 @@ async function useBackend(name: BackendName): Promise<void> {
     await backend.dispose();
     backend = null;
     display = null;
+    watchedDevice = null;
   }
   setState('loading',
     `Loading ${name === 'ort' ? 'ONNX Runtime Web' : 'the WGSL interpreter'}…`);
   backend = await createBackend(name, manifest, BASE);
 
-  backend.device.lost.then((info) => {
-    setState('error', `GPU device lost: ${info.reason}. Reload to restart.`);
-    setControlsEnabled(false);
-  });
+  // WGSL owns a device immediately. ORT stays lazy until an exact image shape is
+  // known, so its device is watched after prepare(width, height) in run().
+  if (!backend.supportedSizes) watchDevice(backend.device);
 
   els.crop.textContent = describeBackend(backend);
   setState('ready', 'Ready — drop an image, choose a file, or use the sample.');
@@ -139,7 +152,9 @@ async function run(source: Blob): Promise<void> {
     setState('encoding', 'Preparing image…');
     let image: PreparedImage;
     try {
-      image = await prepareImage(source, { exact: backend.fixedSize, multipleOf: 8 });
+      image = await prepareImage(source, backend.supportedSizes
+        ? { allowed: backend.supportedSizes }
+        : { multipleOf: 8 });
     } catch (e) {
       setState('error', (e as Error).message);
       return;
@@ -158,8 +173,14 @@ async function run(source: Blob): Promise<void> {
       [{ path: manifest.encoderWeights,
          data: `${BASE}/${manifest.encoderWeights}` }]);
 
+    if (backend.supportedSizes) {
+      setState('loading', `Loading ONNX graph for ${w}x${h}…`);
+    }
+    await backend.prepare(w, h);
+    watchDevice(backend.device);
+
     // The two backends do not share a GPUDevice, so the latent is uploaded to
-    // whichever one is active.
+    // whichever one is active after shape-specific preparation has completed.
     const z = backend.uploadLatent(latent.data, latent.shape);
     backend.setTarget(image.data, image.shape);
 
@@ -232,7 +253,8 @@ function wireInputs(): void {
     if (f) void run(f);
   });
   els.sample.addEventListener('click', () => {
-    void run(sampleImage(backend?.fixedSize ?? 256));
+    const size = backend?.supportedSizes?.[0];
+    void run(sampleImage(size?.width ?? 256, size?.height ?? 256));
   });
 
   for (const evt of ['dragenter', 'dragover'] as const) {
@@ -255,8 +277,11 @@ function wireInputs(): void {
 
 // Exposed so the browser harness can drive the same path a user would.
 (window as any).__runDemo = (blob: Blob) => run(blob);
-(window as any).__sampleImage = (size?: number) =>
-  sampleImage(size ?? backend?.fixedSize ?? 256);
+(window as any).__sampleImage = (width?: number, height?: number) => {
+  if (width != null) return sampleImage(width, height ?? width);
+  const size = backend?.supportedSizes?.[0];
+  return sampleImage(size?.width ?? 256, size?.height ?? 256);
+};
 (window as any).__useBackend = (n: BackendName) => {
   els.backend.value = n;
   return useBackend(n);
