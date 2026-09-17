@@ -6,8 +6,20 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 import flux2_lod_aot_probe as probe
+
+
+def test_level1_loss_sums_three_detail_band_means():
+    loss_fn = probe.Sym4Level1Loss()
+    residual = torch.arange(1 * 3 * 16 * 16, dtype=torch.float32).reshape(1, 3, 16, 16) / 255.0
+    x = probe.zero_pad2d(residual, 6, 6, 6, 6)
+    d = F.conv2d(x, loss_fn.kernels, stride=2, groups=3)
+    expected = sum(d[:, band::3].abs().mean() for band in range(3))
+
+    got = loss_fn(residual)
+    assert torch.allclose(got, expected, rtol=1e-6, atol=1e-7)
 
 
 def test_level3_detector_is_lh_hl_energy():
@@ -60,6 +72,7 @@ def test_flux2_reference_optimizer_config():
 
 
 if __name__ == "__main__":
+    test_level1_loss_sums_three_detail_band_means()
     test_level3_detector_is_lh_hl_energy()
     test_joint_detector_receives_residual()
     test_flux2_reference_optimizer_config()
