@@ -355,6 +355,37 @@ def test_export_wrapper_matches_graph():
     print("      4 outputs identical; wrapper exposes 2 inputs")
 
 
+@test
+def test_onnx_matches_fx_graph():
+    """Exported ONNX reproduces the FX graph under onnxruntime CPU EP."""
+    try:
+        import onnxruntime as ort
+        import numpy as np
+    except ImportError:
+        print("      SKIP (onnxruntime not installed)")
+        return
+    import tempfile
+    import numpy as np
+    sys.path.insert(0, str(ROOT))
+    from export.to_onnx import export_joint, build_graph
+
+    with tempfile.TemporaryDirectory() as td:
+        path = export_joint(res=32, out_dir=Path(td), seed=5)
+        gm, wrapper, z, t = build_graph(res=32, seed=5)
+        with torch.no_grad():
+            ref = wrapper(z, t)
+        sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        got = sess.run(None, {"z": z.numpy(), "target": t.numpy()})
+
+    for i, name in enumerate(["loss", "pred", "score", "grad_z"]):
+        a = ref[i].numpy()
+        b = np.asarray(got[i])
+        denom = max(1e-6, float(np.abs(a).max()))
+        rel = float(np.abs(a - b).max()) / denom
+        assert rel < 1e-4, f"{name}: rel err {rel:.3e}"
+        print(f"      {name}: rel_err={rel:.2e} shape={b.shape}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only run tests whose name contains this")
