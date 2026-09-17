@@ -1,0 +1,4 @@
+node_modules/
+dist/
+# generated fixtures: 56 MB, rebuilt with `python export/make_fixtures.py all`
+public/models/

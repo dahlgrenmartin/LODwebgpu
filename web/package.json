@@ -1,0 +1,23 @@
+{
+  "name": "web",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "onnxruntime-web": "^1.30.0"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.72",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}
