@@ -5,7 +5,7 @@ export default defineConfig({
   optimizeDeps: { exclude: ['onnxruntime-web'] },
   build: {
     rollupOptions: {
-      input: { main: 'index.html', verify: 'verify.html', spike: 'spike.html' },
+      input: { main: 'index.html', verify: 'verify.html', spike: 'spike.html', kernels: 'kernels.html' },
     },
   },
 });

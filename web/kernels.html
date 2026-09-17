@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>WGSL kernel tests</title></head>
+<body style="font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;padding:16px;background:#0f1115;color:#e6e9ef">running&hellip;
+<script type="module">
+  import { runKernelTests } from '/src/wgsl/kernelTest.ts';
+  (async () => {
+    try {
+      if (!navigator.gpu) throw new Error('WebGPU unavailable');
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const r = await runKernelTests(device, '/models/kernel_golden.json');
+      window.__RESULTS__ = r;
+      document.body.textContent = r.status + '\n\n' + r.results.map(x =>
+        `${x.pass ? 'PASS' : 'FAIL'}  ${x.kernel.padEnd(12)} ${x.name.padEnd(30)} ` +
+        `${Number.isFinite(x.maxAbs) ? x.maxAbs.toExponential(2) : '-'}` +
+        (x.error ? '\n        ' + x.error : '')).join('\n');
+    } catch (e) {
+      window.__RESULTS__ = { status: 'ERROR', error: String(e.message || e) };
+      document.body.textContent = 'ERROR ' + (e.stack || e);
+    }
+    window.__DONE__ = true;
+  })();
+</script>
+</body>
+</html>
