@@ -31,13 +31,13 @@
   #status[data-state="done"] { border-color:var(--ok); color:var(--ok); }
   #status[data-state="running"] { border-color:var(--accent); }
   .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:18px; }
-  button, input[type=file]::file-selector-button {
+  button, select, input[type=file]::file-selector-button {
     font:inherit; font-size:13px; padding:8px 14px; border-radius:8px;
     border:1px solid var(--line); background:var(--panel); color:var(--ink);
     cursor:pointer;
   }
-  button:hover:not(:disabled) { border-color:var(--accent); }
-  button:disabled { opacity:0.5; cursor:not-allowed; }
+  button:hover:not(:disabled), select:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled, select:disabled { opacity:0.5; cursor:not-allowed; }
   input[type=file] { font-size:13px; color:var(--muted); }
   #drop {
     border:1.5px dashed var(--line); border-radius:12px; padding:18px;
@@ -88,6 +88,10 @@
   <div id="status" data-state="boot">Starting…</div>
 
   <div class="controls">
+    <select id="backend" aria-label="Execution backend" disabled>
+      <option value="wgsl">WGSL interpreter</option>
+      <option value="ort">ONNX Runtime Web</option>
+    </select>
     <input id="file" type="file" accept="image/*" disabled>
     <button id="sample" disabled>Use sample image</button>
   </div>
