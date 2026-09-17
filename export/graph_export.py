@@ -165,6 +165,16 @@ def export_graph(gm, wrapper, out_dir: Path, name: str = "lod_graph") -> Path:
         if val is not None and hasattr(val, "shape"):
             entry["shape"] = _shape_list(val.shape)
             symbols |= free_symbols(val.shape)
+        elif isinstance(val, (tuple, list)):
+            # Multi-output ops (native_group_norm) carry one shape per element.
+            shapes = []
+            for v in val:
+                if hasattr(v, "shape"):
+                    shapes.append(_shape_list(v.shape))
+                    symbols |= free_symbols(v.shape)
+                else:
+                    shapes.append(None)
+            entry["shapes"] = shapes
         nodes.append(entry)
         if op:
             unsupported.add(op)

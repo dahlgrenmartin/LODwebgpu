@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>WGSL graph test</title></head>
+<body style="font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;padding:16px;background:#0f1115;color:#e6e9ef">running&hellip;
+<script type="module">
+  import { runGraphTest } from '/src/wgsl/graphTest.ts';
+  (async () => {
+    try {
+      const { createMaxDevice } = await import('/src/wgsl/runtime.ts');
+      const device = await createMaxDevice();
+      const man = await fetch('/models/manifest.json').then(r => r.json());
+      const trace = new URLSearchParams(location.search).has('trace');
+      const r = await runGraphTest(device, '/models', man.resolutions[0].image, trace);
+      window.__RESULTS__ = r;
+      document.body.textContent = `${r.status}  (${r.ms} ms)\n\n` + r.results.map(x =>
+        `${x.pass ? 'PASS' : 'FAIL'}  ${x.name.padEnd(8)} ${x.shape.padEnd(16)} rms=${x.relErr.toExponential(2)} max=${x.maxRel.toExponential(2)}`
+      ).join('\n');
+    } catch (e) {
+      window.__RESULTS__ = { status: 'ERROR', error: String(e.message || e), stack: String(e.stack||'') };
+      document.body.textContent = 'ERROR ' + (e.stack || e);
+    }
+    window.__DONE__ = true;
+  })();
+</script>
+</body>
+</html>

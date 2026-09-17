@@ -184,6 +184,10 @@ def build_graph_dynamic(res: int = 16, seed: int = 0, real: bool = True,
         # constant instead of a parity-dependent expression.
         ft = torch.empty(1, out_c, fz.shape[2] * 8, fz.shape[3] * 8)
         gm, sig = aot_export_module(m, (fz, ft), trace_joint=True, output_loss_index=0)
+    # FakeTensorProp cannot re-run this graph under symbolic shapes, so nodes
+    # created by the rewrite carry no meta['val'] and the exporter emits no shape
+    # for them. The interpreter infers those shapes from the operands instead,
+    # which is what it has to do for a shape-agnostic graph anyway.
     rw.rewrite(gm)
     wrapper = ExportWrapper(gm, sig, m).eval()
     z = torch.randn(1, latent_c, res_h, res_w)

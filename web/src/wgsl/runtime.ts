@@ -12,6 +12,25 @@ import {
 
 export const MAX_RANK = 8;
 
+/**
+ * A device with the adapter's maximum buffer limits.
+ *
+ * The defaults cap a storage binding at 128 MB, which this backend exceeds at
+ * realistic resolutions: the binding is then rejected, the dispatch is dropped,
+ * and the output silently keeps whatever the pool left there.
+ */
+export async function createMaxDevice(): Promise<GPUDevice> {
+  if (!navigator.gpu) throw new Error('WebGPU unavailable: navigator.gpu undefined');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error('WebGPU unavailable: requestAdapter() returned null');
+  return adapter.requestDevice({
+    requiredLimits: {
+      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+      maxBufferSize: adapter.limits.maxBufferSize,
+    },
+  });
+}
+
 export interface Tensor {
   buffer: GPUBuffer;
   shape: number[];
@@ -34,12 +53,29 @@ export type ElementwiseOpName = keyof typeof ElementwiseOp;
  * mode that already cost us once.
  */
 export class Runtime {
+  /** Matches DISPATCH_STRIDE in the kernels: 65535 * 64. */
+  static readonly MAX_GROUPS = 65535;
+
   private pipelines = new Map<string, GPUComputePipeline>();
+
+  /**
+   * Placeholder for optional bindings.
+   *
+   * Binding a real tensor as a stand-in risks binding the same buffer as both
+   * read-only and read-write in one pass, which is a WebGPU synchronisation-
+   * scope violation: the encoder is invalidated and the dispatch silently never
+   * runs, leaving stale data behind.
+   */
+  private dummy!: GPUBuffer;
 
   private constructor(readonly device: GPUDevice) {}
 
   static async create(device: GPUDevice): Promise<Runtime> {
     const rt = new Runtime(device);
+    rt.dummy = device.createBuffer({
+      size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      label: 'unused-binding',
+    });
     await rt.compile('gather', gatherSrc);
     await rt.compile('elementwise', elementwiseSrc);
     await rt.compile('reduce', reduceSrc);
@@ -100,7 +136,12 @@ export class Runtime {
     const pass = enc.beginComputePass();
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(Math.max(1, Math.ceil(threads / 64)));
+    // Split across a 2-D grid: a single dimension caps at 65535 workgroups, and
+    // exceeding it makes the dispatch silently do nothing.
+    const groups = Math.max(1, Math.ceil(threads / 64));
+    const gx = Math.min(groups, Runtime.MAX_GROUPS);
+    const gy = Math.ceil(groups / Runtime.MAX_GROUPS);
+    pass.dispatchWorkgroups(gx, gy);
     pass.end();
     this.device.queue.submit([enc.finish()]);
   }
@@ -151,7 +192,26 @@ export class Runtime {
       { binding: 0, resource: { buffer: this.i32Buffer(dims) } },
       { binding: 1, resource: { buffer: this.f32Buffer([scalar]) } },
       { binding: 2, resource: { buffer: a.buffer } },
-      { binding: 3, resource: { buffer: (b ?? a).buffer } },
+      { binding: 3, resource: { buffer: b ? b.buffer : this.dummy } },
+      { binding: 4, resource: { buffer: out } },
+    ], total);
+  }
+
+  /** Fill a buffer with a constant without reading it back as an input. */
+  fill(value: number, outShape: number[], out: GPUBuffer): void {
+    const total = numel(outShape);
+    const dims = [
+      outShape.length, total,
+      ...padTo(outShape, MAX_RANK, 1),
+      ...padStrides(new Array(outShape.length).fill(0), MAX_RANK),
+      ...padStrides(new Array(outShape.length).fill(0), MAX_RANK),
+      ElementwiseOp.fill, 0,
+    ];
+    this.run('elementwise', [
+      { binding: 0, resource: { buffer: this.i32Buffer(dims) } },
+      { binding: 1, resource: { buffer: this.f32Buffer([value]) } },
+      { binding: 2, resource: { buffer: this.dummy } },
+      { binding: 3, resource: { buffer: this.dummy } },
       { binding: 4, resource: { buffer: out } },
     ], total);
   }
@@ -208,7 +268,7 @@ export class Runtime {
       { binding: 0, resource: { buffer: this.i32Buffer(dims) } },
       { binding: 1, resource: { buffer: src.buffer } },
       { binding: 2, resource: { buffer: weight.buffer } },
-      { binding: 3, resource: { buffer: (bias ?? src).buffer } },
+      { binding: 3, resource: { buffer: bias ? bias.buffer : this.dummy } },
       { binding: 4, resource: { buffer: out } },
     ], total);
   }
@@ -234,8 +294,8 @@ export class Runtime {
       { binding: 1, resource: { buffer: src.buffer } },
       { binding: 2, resource: { buffer: mean } },
       { binding: 3, resource: { buffer: rstd } },
-      { binding: 4, resource: { buffer: (weight ?? src).buffer } },
-      { binding: 5, resource: { buffer: (bias ?? src).buffer } },
+      { binding: 4, resource: { buffer: weight ? weight.buffer : this.dummy } },
+      { binding: 5, resource: { buffer: bias ? bias.buffer : this.dummy } },
       { binding: 6, resource: { buffer: out } },
     ], total);
   }
@@ -258,7 +318,7 @@ export class Runtime {
       { binding: 1, resource: { buffer: this.f32Buffer([p.alpha ?? 1, p.beta ?? 1]) } },
       { binding: 2, resource: { buffer: a.buffer } },
       { binding: 3, resource: { buffer: b.buffer } },
-      { binding: 4, resource: { buffer: (bias ?? a).buffer } },
+      { binding: 4, resource: { buffer: bias ? bias.buffer : this.dummy } },
       { binding: 5, resource: { buffer: out } },
     ], total);
   }

@@ -29,6 +29,15 @@ const OP_FILL : i32 = 10;
 const OP_COPY : i32 = 11;
 const OP_RSUB : i32 = 12;
 
+// Linear thread index across a 2-D dispatch grid.
+//
+// maxComputeWorkgroupsPerDimension is 65535, and a 512x512 activation needs
+// ~98k workgroups. Exceeding the limit makes the dispatch invalid, and an
+// invalid dispatch silently does nothing - the output buffer simply stays zero.
+// The x extent is pinned to 65535 whenever a second row is needed, so this
+// stride is a constant.
+const DISPATCH_STRIDE : u32 = 4194240u;   // 65535 * 64
+
 @group(0) @binding(0) var<storage, read> dims : array<i32>;
 @group(0) @binding(1) var<storage, read> scalars : array<f32>;
 @group(0) @binding(2) var<storage, read> a : array<f32>;
@@ -37,7 +46,7 @@ const OP_RSUB : i32 = 12;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-  let i = gid.x;
+  let i = gid.x + gid.y * DISPATCH_STRIDE;
   let total = u32(dims[1]);
   if (i >= total) { return; }
 
