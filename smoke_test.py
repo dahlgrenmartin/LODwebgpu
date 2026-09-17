@@ -438,6 +438,33 @@ def test_fp16_initializers_and_shared_external_data():
         print(f"      fp16 grad_z rel_err={rel:.2e} (accepted cost, budget 6e-2)")
 
 
+@test
+def test_reference_dump_roundtrips():
+    """Golden binary matches the wrapper outputs it was produced from."""
+    import tempfile
+    import numpy as np
+    sys.path.insert(0, str(ROOT))
+    from export.reference import dump_reference
+    from export.to_onnx import build_graph
+
+    with tempfile.TemporaryDirectory() as td:
+        blob = dump_reference(res=16, out_dir=Path(td), seed=5)
+        meta = json.loads(Path(str(blob).replace(".bin", ".json")).read_text())
+        raw = np.frombuffer(Path(blob).read_bytes(), dtype="<f4")
+        _, wrapper, z, t = build_graph(res=16, seed=5)
+        with torch.no_grad():
+            ref = wrapper(z, t)
+        named = {"z": z, "target": t, "loss": ref[0], "pred": ref[1],
+                 "score": ref[2], "grad_z": ref[3]}
+        for name, tensor in named.items():
+            e = meta[name]
+            got = raw[e["offset"]:e["offset"] + e["count"]]
+            want = tensor.detach().numpy().ravel().astype("<f4")
+            assert got.shape == want.shape, f"{name}: {got.shape} vs {want.shape}"
+            assert np.array_equal(got, want), f"{name}: bytes differ"
+        print(f"      {len(named)} tensors, {raw.size} floats total")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only run tests whose name contains this")

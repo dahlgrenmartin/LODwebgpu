@@ -1,4 +1,4 @@
-torch=2.12.0.dev20260308+cu128  running 12/12 tests
+torch=2.12.0.dev20260308+cu128  running 13/13 tests
 
 [ RUN  ] test_sym4_matches_pywt
          Sym4 detail filters reproduce pywt.dwt2(mode='zero') coefficient-exactly.
@@ -97,4 +97,9 @@ torch=2.12.0.dev20260308+cu128  running 12/12 tests
       fp16 grad_z rel_err=4.16e-02 (accepted cost, budget 6e-2)
 [  OK  ]
 
-PASSED 12/12
+[ RUN  ] test_reference_dump_roundtrips
+         Golden binary matches the wrapper outputs it was produced from.
+      6 tensors, 114690 floats total
+[  OK  ]
+
+PASSED 13/13
