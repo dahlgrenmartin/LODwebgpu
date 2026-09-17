@@ -44,7 +44,7 @@ discrete GPU.
 | Decision | Choice | Rationale |
 |---|---|---|
 | Execution engine | ONNX Runtime Web, WebGPU EP | Every op in the final inventory has a standard ONNX equivalent *because* the rewrite eliminated the exotic ones. Mature, tuned kernels are the dominant variable for "works on a normal laptop"; neither a hand-written WGSL interpreter nor ExecuTorch offers that today. |
-| Weight payload | fp16 initializers, fp32 compute | Halves download. Graph stays fp32 end-to-end, so every verified numerical result holds unchanged. |
+| Weight payload | fp16 initializers, fp32 compute | Halves download. Arithmetic stays fp32, but the **weights themselves are quantized**: measured 2026-09-17, this costs 4.2e-02 relative on `grad_z` at 256² (2.6e-03 at 128²), while `loss`/`pred`/`score` stay at or below 1.6e-03. Accepted: `pred` error is under one 8-bit level, and Adam's `sqrt(v)` normalization absorbs much of the gradient error. Detector-score parity against the Python reference is **not** reachable under fp16. |
 | Display | GPU texture, no readback | Output buffer is bound directly as `var<storage, read>` in a fragment shader. Removes the only reason to throttle display frequency. |
 | Feedback cadence | One step per `requestAnimationFrame`, canvas updated every step | Free once display is GPU-side; keeps the page responsive and self-paces to the adapter. |
 | Latent init | VAE encoder, posterior mean | Faithful to the reference LOD implementation and converges fastest, at the cost of roughly doubling the download. |

@@ -386,6 +386,58 @@ def test_onnx_matches_fx_graph():
         print(f"      {name}: rel_err={rel:.2e} shape={b.shape}")
 
 
+@test
+def test_fp16_initializers_and_shared_external_data():
+    """fp16 storage keeps parity, and both resolutions share one weights file."""
+    try:
+        import onnx
+        import onnxruntime as ort
+        import numpy as np
+    except ImportError:
+        print("      SKIP (onnx/onnxruntime not installed)")
+        return
+    import tempfile
+    import numpy as np
+    sys.path.insert(0, str(ROOT))
+    from export.to_onnx import export_joint, build_graph
+
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        p32 = export_joint(res=32, out_dir=d, fp16=True, external_data=True, seed=5)
+        p16 = export_joint(res=16, out_dir=d, fp16=True, external_data=True, seed=5)
+        assert (d / "weights.bin").exists(), "shared weights.bin not written"
+        sizes = sorted(f.stat().st_size for f in d.glob("*.onnx"))
+        assert sizes[-1] < 5 * 1024 * 1024, f"graph file too large: {sizes[-1]}"
+
+        def dtypes(path):
+            m = onnx.load(str(path), load_external_data=False)
+            return {i.name: i.data_type for i in m.graph.initializer}
+        a, b = dtypes(p32), dtypes(p16)
+        shared = set(a) & set(b)
+        assert shared, "no initializer names shared between resolutions"
+        for n in shared:
+            assert a[n] == b[n], f"{n}: dtype differs between resolutions"
+        half = sum(1 for v in a.values() if v == onnx.TensorProto.FLOAT16)
+        assert half > 0, "no fp16 initializers produced"
+        print(f"      {len(shared)}/{len(a)} initializers shared, {half} stored fp16")
+        print(f"      graph files {[s // 1024 for s in sizes]} KiB, weights.bin "
+              f"{(d / 'weights.bin').stat().st_size // 1024} KiB")
+
+        _, wrapper, z, t = build_graph(res=32, seed=5)
+        with torch.no_grad():
+            ref = wrapper(z, t)
+        sess = ort.InferenceSession(str(p32), providers=["CPUExecutionProvider"])
+        got = sess.run(None, {"z": z.numpy(), "target": t.numpy()})
+        r, g = ref[3].numpy(), np.asarray(got[3])
+        rel = float(np.abs(r - g).max()) / max(1e-6, float(np.abs(r).max()))
+        # Measured 2026-09-17: fp16 weight storage costs 2.6e-03 at 128x128 and
+        # 4.2e-02 at 256x256 on grad_z, while loss/pred/score stay <= 1.6e-03.
+        # Accepted trade for halving the download; see the design doc.  The
+        # threshold guards against regression, not against the known cost.
+        assert rel < 6e-2, f"fp16 initializers degraded grad_z: rel {rel:.3e}"
+        print(f"      fp16 grad_z rel_err={rel:.2e} (accepted cost, budget 6e-2)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only run tests whose name contains this")

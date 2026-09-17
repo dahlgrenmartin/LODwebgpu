@@ -1,4 +1,4 @@
-torch=2.12.0.dev20260308+cu128  running 11/11 tests
+torch=2.12.0.dev20260308+cu128  running 12/12 tests
 
 [ RUN  ] test_sym4_matches_pywt
          Sym4 detail filters reproduce pywt.dwt2(mode='zero') coefficient-exactly.
@@ -74,4 +74,27 @@ torch=2.12.0.dev20260308+cu128  running 11/11 tests
       grad_z: rel_err=6.86e-06 shape=(1, 32, 32, 32)
 [  OK  ]
 
-PASSED 11/11
+[ RUN  ] test_fp16_initializers_and_shared_external_data
+         fp16 storage keeps parity, and both resolutions share one weights file.
+[torch.onnx] Obtain model graph for `ExportWrapper([...]` with `torch.export.export(..., strict=False)`...
+[torch.onnx] Obtain model graph for `ExportWrapper([...]` with `torch.export.export(..., strict=False)`... ✅
+[torch.onnx] Run decompositions...
+[torch.onnx] Run decompositions... ✅
+[torch.onnx] Translate the graph into ONNX...
+[torch.onnx] Translate the graph into ONNX... ✅
+[torch.onnx] Optimize the ONNX graph...
+[torch.onnx] Optimize the ONNX graph... ✅
+[torch.onnx] Obtain model graph for `ExportWrapper([...]` with `torch.export.export(..., strict=False)`...
+[torch.onnx] Obtain model graph for `ExportWrapper([...]` with `torch.export.export(..., strict=False)`... ✅
+[torch.onnx] Run decompositions...
+[torch.onnx] Run decompositions... ✅
+[torch.onnx] Translate the graph into ONNX...
+[torch.onnx] Translate the graph into ONNX... ✅
+[torch.onnx] Optimize the ONNX graph...
+[torch.onnx] Optimize the ONNX graph... ✅
+      139/139 initializers shared, 41 stored fp16
+      graph files [1283, 1284] KiB, weights.bin 109527 KiB
+      fp16 grad_z rel_err=4.16e-02 (accepted cost, budget 6e-2)
+[  OK  ]
+
+PASSED 12/12

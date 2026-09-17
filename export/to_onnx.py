@@ -27,6 +27,11 @@ from export.wrap import ExportWrapper  # noqa: E402
 OUTPUT_NAMES = ["loss", "pred", "score", "grad_z"]
 INPUT_NAMES = ["z", "target"]
 
+# Initializers below this size stay fp32: they are scalars and shape
+# constants, contribute nothing to download size, and can overflow fp16.
+FP16_MIN_NUMEL = 1024
+FP16_MAX = 65504.0
+
 
 def _placeholder_args(gm, sig, module, z, target, mode):
     state = module.state_dict()
@@ -109,9 +114,17 @@ def _to_fp16_initializers(model) -> None:
     for init in graph.initializer:
         if init.data_type != onnx.TensorProto.FLOAT:
             continue
-        arr = numpy_helper.to_array(init).astype(np.float16)
+        arr = numpy_helper.to_array(init)
+        # Only bulk tensors are worth halving.  Scalar/small constants carry all
+        # the overflow risk and none of the download cost: the Sym4 loss reduces
+        # over ~154k elements, and that divisor exceeds fp16's 65504 max, which
+        # silently becomes inf and NaNs the whole graph.
+        if arr.size < FP16_MIN_NUMEL:
+            continue
+        if not np.isfinite(arr).all() or float(np.abs(arr).max()) > FP16_MAX:
+            continue
         original = init.name
-        half = numpy_helper.from_array(arr, original + "_fp16")
+        half = numpy_helper.from_array(arr.astype(np.float16), original + "_fp16")
         init.CopyFrom(half)
         renamed.append(original)
 
