@@ -1,3 +1,7 @@
+export function bandPsnr(energy: number): number {
+  return -10 * Math.log10(energy + 1e-30);
+}
+
 export function linearSlope(values: readonly number[], window: number): number {
   const y = values.slice(-window);
   const n = y.length;
