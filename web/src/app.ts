@@ -206,8 +206,12 @@ async function run(source: Blob): Promise<void> {
     let detectorSlope = Number.NaN;
 
     for (let step = 0; step < steps; step++) {
-      // One step per frame keeps the page responsive and self-paces to the GPU.
-      await new Promise((r) => requestAnimationFrame(r));
+      // Yield to the event loop, but do NOT wait for a compositor frame.
+      // requestAnimationFrame self-paces to the display, and the display cannot
+      // present while our own submitted work saturates the GPU: the callback is
+      // deferred until the queue drains. Measured at 256x256 that cost ~780 ms
+      // per step on top of ~220 ms of actual compute - more than 4x the work.
+      await new Promise((r) => setTimeout(r, 0));
       const out = await backend.step(z);
       display.draw(out.pred);
 
