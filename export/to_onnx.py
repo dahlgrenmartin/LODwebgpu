@@ -244,8 +244,9 @@ class RealJointLOD(torch.nn.Module):
     def forward(self, z, target):
         h = z if self.post_quant_conv is None else self.post_quant_conv(z)
         pred = self.decoder(h)
-        loss = self.sym4(pred - target)
-        score = self.detector(pred)
+        residual = pred - target
+        loss = self.sym4(residual)
+        score = self.detector(residual)
         return loss, pred.detach(), score.detach()
 
 
