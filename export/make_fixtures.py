@@ -30,6 +30,15 @@ RES = 16   # latent 16 -> 128x128 image
 MODEL_ID = "black-forest-labs/FLUX.2-small-decoder"
 
 
+def _export_wgsl_graph(*, real: bool) -> None:
+    from export.graph_export import export_graph
+    from export.to_onnx import build_graph_dynamic
+
+    gm, wrapper, _, _ = build_graph_dynamic(
+        res=RES, seed=SEED, real=real, model_id=MODEL_ID)
+    export_graph(gm, wrapper, OUT)
+
+
 def stage_m0() -> None:
     from export.to_onnx import export_joint, write_manifest, clear_outputs
     from export.reference import dump_reference
@@ -37,6 +46,7 @@ def stage_m0() -> None:
     clear_outputs(OUT)
     export_joint(res=RES, out_dir=OUT, fp16=True, external_data=True, seed=SEED)
     dump_reference(res=RES, out_dir=OUT, seed=SEED)
+    _export_wgsl_graph(real=False)
     write_manifest(OUT, [RES], REFERENCE_ADAM)
     print(f"m0 fixtures -> {OUT}")
 
@@ -69,6 +79,7 @@ def stage_real() -> None:
     export_joint_real(res=RES, out_dir=OUT, fp16=True, external_data=True, seed=SEED)
     dump_reference_real(res=RES, out_dir=OUT, seed=SEED)
     export_encoder(OUT, model_id=MODEL_ID, fp16=True, external_data=True)
+    _export_wgsl_graph(real=True)
     write_manifest(OUT, [RES], REFERENCE_ADAM)
     print(f"real-checkpoint fixtures -> {OUT}")
 
