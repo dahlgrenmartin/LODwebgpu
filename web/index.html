@@ -113,10 +113,10 @@
   </div>
 
   <div class="note">
-    The right pane is rendered straight from the decoder's GPU output buffer — no
-    readback. The Adam hyperparameters shipped here are placeholders, not the
-    reference LOD values, so treat the loss curve as evidence the loop runs, not as
-    a statement about LOD's behaviour.
+    Refinement uses the reference level-1 Sym4 detail-only L1 objective and the
+    FLUX.2 30-step Adam configuration. Detection traces level-3 LH/HL residual
+    band-PSNR and classifies from the final 10-step slope. The right pane is
+    rendered straight from the decoder's GPU output buffer — no image readback.
     <a href="/verify.html" style="color:var(--accent)">Verification harness →</a>
   </div>
 </div>
