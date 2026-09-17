@@ -11,15 +11,23 @@ export interface PreparedImage {
 }
 
 /**
- * Decode a user-supplied image, which must already be exactly `size` x `size`.
+ * Decode a user-supplied image and hand its pixels to the VAE unaltered.
  *
- * Nothing is resampled and nothing is cropped: the pixels reach the VAE as given.
+ * Nothing is resampled and nothing is cropped. What varies between backends is
+ * only which sizes are *accepted*, never what happens to the pixels.
  * `imageOrientation: 'from-image'` applies EXIF rotation, which phone photos rely
  * on; without it portrait shots arrive sideways.  Alpha is dropped.
  */
+export interface SizePolicy {
+  /** Require exactly this square size (the fixed-shape ONNX backend). */
+  exact?: number | null;
+  /** Otherwise accept the native size if both sides divide by this. */
+  multipleOf?: number;
+}
+
 export async function prepareImage(
   source: Blob,
-  size: number,
+  policy: SizePolicy,
 ): Promise<PreparedImage> {
   let bitmap: ImageBitmap;
   try {
@@ -28,41 +36,50 @@ export async function prepareImage(
     throw new Error(`could not decode that file as an image (${(e as Error).message})`);
   }
 
+  const w = bitmap.width;
+  const h = bitmap.height;
   // The image must reach the VAE byte-for-byte. Resizing rewrites the
   // high-frequency detail the wavelet detector reads; cropping removes evidence
-  // from the frame. Neither is acceptable for detection, so an image that is not
-  // exactly the model's size is refused rather than altered.
-  if (bitmap.width !== size || bitmap.height !== size) {
-    const w = bitmap.width;
-    const h = bitmap.height;
-    bitmap.close();
-    throw new Error(
-      `This build accepts exactly ${size}x${size} images; yours is ${w}x${h}. ` +
-      `It is not resized or cropped, because either would alter the detail the ` +
-      `detector measures. Arbitrary sizes need the shape-agnostic runtime.`);
+  // from the frame. Neither is acceptable, so anything that does not fit is
+  // refused rather than altered.
+  if (policy.exact != null) {
+    if (w !== policy.exact || h !== policy.exact) {
+      bitmap.close();
+      throw new Error(
+        `The fixed-shape backend accepts exactly ${policy.exact}x${policy.exact}; ` +
+        `yours is ${w}x${h}. Switch to the WGSL backend for native sizes.`);
+    }
+  } else {
+    const m = policy.multipleOf ?? 8;
+    if (w % m !== 0 || h % m !== 0) {
+      bitmap.close();
+      throw new Error(
+        `Image is ${w}x${h}. The decoder downsamples by ${m}, so both sides must ` +
+        `be a multiple of ${m}. It is not cropped or resized to fit, because ` +
+        `either would alter the detail the detector measures.`);
+    }
   }
 
+  const size = { w, h };
   const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
+  canvas.width = w;
+  canvas.height = h;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('2D canvas context unavailable');
   ctx.drawImage(bitmap, 0, 0);   // 1:1, no scaling, no offset
-  const sourceSize = { w: bitmap.width, h: bitmap.height };
-  const sx = 0;
-  const sy = 0;
+  const sourceSize = { w, h };
   bitmap.close();
 
-  const preview = ctx.getImageData(0, 0, size, size);
+  const preview = ctx.getImageData(0, 0, size.w, size.h);
   const px = preview.data;
-  const n = size * size;
+  const n = size.w * size.h;
   const data = new Float32Array(3 * n);
   for (let i = 0; i < n; i++) {
     data[i] = (px[i * 4] / 255) * 2 - 1;              // R
     data[n + i] = (px[i * 4 + 1] / 255) * 2 - 1;      // G
     data[2 * n + i] = (px[i * 4 + 2] / 255) * 2 - 1;  // B
   }
-  return { data, shape: [1, 3, size, size], preview, sourceSize, crop: { x: sx, y: sy } };
+  return { data, shape: [1, 3, size.h, size.w], preview, sourceSize, crop: { x: 0, y: 0 } };
 }
 
 /**

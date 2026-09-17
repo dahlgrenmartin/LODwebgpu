@@ -1,10 +1,9 @@
-import * as ort from 'onnxruntime-web/webgpu';
 import { loadManifest, type Manifest } from './manifest';
-import { assertWebGpu, createSession, type Runner } from './session';
-import { initLatent } from './latentInit';
+import { encodeLatent } from './latentInit';
 import { prepareImage, sampleImage, type PreparedImage } from './imageInput';
 import { Display } from './display';
 import { Adam } from './adam';
+import { createBackend, type Backend, type BackendName } from './backends';
 
 const BASE = '/models';
 
@@ -22,13 +21,12 @@ const els = {
   score: document.getElementById('score') as HTMLElement,
   rate: document.getElementById('rate') as HTMLElement,
   crop: document.getElementById('crop') as HTMLElement,
+  backend: document.getElementById('backend') as HTMLSelectElement,
 };
 
 let manifest: Manifest;
-let device: GPUDevice;
-let runner: Runner;
-let display: Display;
-let imageSize = 128;
+let backend: Backend | null = null;
+let display: Display | null = null;
 let busy = false;
 
 function setState(state: State, message: string): void {
@@ -40,74 +38,88 @@ function setState(state: State, message: string): void {
 function setControlsEnabled(enabled: boolean): void {
   els.file.disabled = !enabled;
   els.sample.disabled = !enabled;
+  els.backend.disabled = !enabled;
 }
 
-/** Read a scalar output regardless of whether it landed on CPU or GPU. */
-async function scalar(t: ort.Tensor): Promise<number> {
-  return ((await t.getData(true)) as Float32Array)[0];
+function describeBackend(b: Backend): string {
+  return b.fixedSize
+    ? `ONNX Runtime Web — fixed ${b.fixedSize}x${b.fixedSize}`
+    : 'WGSL interpreter — any size divisible by 8';
+}
+
+async function useBackend(name: BackendName): Promise<void> {
+  if (backend) {
+    await backend.dispose();
+    backend = null;
+    display = null;
+  }
+  setState('loading',
+    `Loading ${name === 'ort' ? 'ONNX Runtime Web' : 'the WGSL interpreter'}…`);
+  backend = await createBackend(name, manifest, BASE);
+
+  backend.device.lost.then((info) => {
+    setState('error', `GPU device lost: ${info.reason}. Reload to restart.`);
+    setControlsEnabled(false);
+  });
+
+  els.crop.textContent = describeBackend(backend);
+  setState('ready', 'Ready — drop an image, choose a file, or use the sample.');
+  setControlsEnabled(true);
 }
 
 async function boot(): Promise<void> {
   setState('boot', 'Checking WebGPU…');
-  try {
-    await assertWebGpu();
-  } catch {
+  if (!navigator.gpu) {
     throw new Error(
       'This demo needs WebGPU. Chrome or Edge 113+ on desktop supports it; ' +
       'Safari 18+ and Firefox need it enabled. There is deliberately no CPU ' +
       'fallback — 30 optimization steps through a 28M-parameter decoder would ' +
       'take minutes rather than seconds.');
   }
-
-  setState('loading', 'Loading model (~56 MB, cached after the first visit)…');
   manifest = await loadManifest(`${BASE}/manifest.json`);
-  imageSize = manifest.resolutions[0].image;
-
-  // ORT creates the device; we adopt it so our render pass and Adam kernel can
-  // bind the session's own output buffers.
-  runner = await createSession(manifest, imageSize, BASE, true);
-  device = runner.device;
-
-  device.lost.then((info) => {
-    setState('error', `GPU device lost: ${info.reason}. Reload to restart.`);
-    setControlsEnabled(false);
+  els.backend.addEventListener('change', () => {
+    void useBackend(els.backend.value as BackendName).catch((e) => {
+      setState('error', (e as Error).message);
+    });
   });
-
-  display = await new Display(device, els.after, imageSize).init();
-
-  els.before.width = imageSize;
-  els.before.height = imageSize;
-
-  setState('ready', 'Ready — drop an image, choose a file, or use the sample.');
-  setControlsEnabled(true);
+  await useBackend(els.backend.value as BackendName);
 }
 
 async function run(source: Blob): Promise<void> {
-  if (busy) return;
+  if (busy || !backend) return;
   busy = true;
   setControlsEnabled(false);
   try {
     setState('encoding', 'Preparing image…');
     let image: PreparedImage;
     try {
-      image = await prepareImage(source, imageSize);
+      image = await prepareImage(source, { exact: backend.fixedSize, multipleOf: 8 });
     } catch (e) {
       setState('error', (e as Error).message);
       return;
     }
+    const { w, h } = image.sourceSize;
+    els.before.width = w;
+    els.before.height = h;
     els.before.getContext('2d')!.putImageData(image.preview, 0, 0);
     els.crop.textContent =
-      `${image.sourceSize.w}x${image.sourceSize.h} in, unaltered - no resize, no crop`;
+      `${w}x${h} in, unaltered — no resize, no crop · ${describeBackend(backend)}`;
 
     setState('encoding', 'Encoding to latent…');
-    const { buffer: zBuf, numel, shape: zShape } = await initLatent(
-      device, `${BASE}/encoder.onnx`, image.data, image.shape,
+    const latent = await encodeLatent(
+      `${BASE}/${manifest.encoder}`, image.data, image.shape,
       { factor: 1.0, shift: 0.0 },
       [{ path: manifest.encoderWeights,
          data: `${BASE}/${manifest.encoderWeights}` }]);
 
-    const target = new ort.Tensor('float32', image.data, image.shape);
-    const adam = await new Adam(device, numel, manifest.adam).init();
+    // The two backends do not share a GPUDevice, so the latent is uploaded to
+    // whichever one is active.
+    const z = backend.uploadLatent(latent.data, latent.shape);
+    backend.setTarget(image.data, image.shape);
+
+    display = await new Display(backend.device, els.after, w, h).init();
+
+    const adam = await new Adam(backend.device, latent.data.length, manifest.adam).init();
     const steps = manifest.adam.steps;
 
     let last = performance.now();
@@ -117,24 +129,15 @@ async function run(source: Blob): Promise<void> {
     for (let step = 0; step < steps; step++) {
       // One step per frame keeps the page responsive and self-paces to the GPU.
       await new Promise((r) => requestAnimationFrame(r));
+      const out = await backend.step(z);
+      display.draw(out.pred);
 
-      const z = ort.Tensor.fromGpuBuffer(zBuf, {
-        dataType: 'float32', dims: zShape,
-      });
-      const out = await runner.run(z, target);
-
-      const predBuf = (out.pred as ort.Tensor).gpuBuffer as GPUBuffer;
-      display.draw(predBuf);
-
-      const loss = await scalar(out.loss as ort.Tensor);
-      const score = await scalar(out.score as ort.Tensor);
-
-      if (!Number.isFinite(loss)) {
+      if (!Number.isFinite(out.loss)) {
         setState('error', `Diverged to NaN at step ${step + 1}. Stopped.`);
         return;
       }
-      rising = loss > previousLoss ? rising + 1 : 0;
-      previousLoss = loss;
+      rising = out.loss > previousLoss ? rising + 1 : 0;
+      previousLoss = out.loss;
       if (rising >= 3) {
         setState('error',
           `Loss rose for 3 consecutive steps (step ${step + 1}). Stopped — the ` +
@@ -144,17 +147,16 @@ async function run(source: Blob): Promise<void> {
 
       const now = performance.now();
       els.step.textContent = `${step + 1} / ${steps}`;
-      els.loss.textContent = loss.toFixed(5);
-      els.score.textContent = score.toFixed(5);
+      els.loss.textContent = out.loss.toFixed(5);
+      els.score.textContent = out.score.toFixed(5);
       els.rate.textContent = `${Math.round(now - last)} ms`;
       last = now;
       setState('running', `Optimizing… step ${step + 1} of ${steps}`);
 
-      const gradBuf = (out.grad_z as ort.Tensor).gpuBuffer as GPUBuffer;
-      adam.step(zBuf, gradBuf);
+      adam.step(z.buffer, out.grad);
     }
 
-    setState('done', `Done — ${steps} steps. Drop another image to run again.`);
+    setState('done', `Done — ${steps} steps on the ${backend.name} backend.`);
   } catch (e) {
     setState('error', `${(e as Error).message}`);
     throw e;
@@ -169,7 +171,9 @@ function wireInputs(): void {
     const f = els.file.files?.[0];
     if (f) void run(f);
   });
-  els.sample.addEventListener('click', () => void run(sampleImage(imageSize)));
+  els.sample.addEventListener('click', () => {
+    void run(sampleImage(backend?.fixedSize ?? 256));
+  });
 
   for (const evt of ['dragenter', 'dragover'] as const) {
     els.drop.addEventListener(evt, (e) => {
@@ -191,7 +195,12 @@ function wireInputs(): void {
 
 // Exposed so the browser harness can drive the same path a user would.
 (window as any).__runDemo = (blob: Blob) => run(blob);
-(window as any).__sampleImage = () => sampleImage(imageSize);
+(window as any).__sampleImage = (size?: number) =>
+  sampleImage(size ?? backend?.fixedSize ?? 256);
+(window as any).__useBackend = (n: BackendName) => {
+  els.backend.value = n;
+  return useBackend(n);
+};
 
 wireInputs();
 boot().catch((e) => {

@@ -3,21 +3,20 @@ import * as ort from 'onnxruntime-web/webgpu';
 export interface Scaling { factor: number; shift: number; }
 
 /**
- * Encode an image to its posterior mean and upload it as the initial latent.
+ * Encode an image to its posterior mean, the initial latent.
  *
  * Deterministic: takes the mean rather than sampling, so repeated runs on the
  * same image produce identical trajectories.  The encoder session is released
  * before returning - it is dead weight for the optimization loop, and freeing it
  * returns GPU memory exactly when the joint graph needs headroom.
  */
-export async function initLatent(
-  device: GPUDevice,
+export async function encodeLatent(
   encoderUrl: string,
   image: Float32Array,
   shape: number[],
   scaling: Scaling,
   externalData?: { path: string; data: string }[],
-): Promise<{ buffer: GPUBuffer; numel: number; shape: number[] }> {
+): Promise<{ data: Float32Array; shape: number[] }> {
   const session = await ort.InferenceSession.create(encoderUrl, {
     executionProviders: ['webgpu'],
     ...(externalData ? { externalData } : {}),
@@ -40,10 +39,7 @@ export async function initLatent(
     await session.release();
   }
 
-  const buffer = device.createBuffer({
-    size: latent.length * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  device.queue.writeBuffer(buffer, 0, latent);
-  return { buffer, numel: latent.length, shape: latentShape };
+  // Returned on the CPU: the caller decides which device it belongs on, and the
+  // two backends do not share a GPUDevice.
+  return { data: latent, shape: latentShape };
 }
