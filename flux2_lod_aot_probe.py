@@ -194,12 +194,13 @@ class Sym4Level1Loss(nn.Module):
 
 
 class Sym4Level3Detector(nn.Module):
-    """Forward-only level-3 Sym4 detail trace.
+    """Forward-only level-3 Sym4 residual-energy trace.
 
-    Three successive level-1 transforms, each applied to the previous
-    approximation band, matching pywt.wavedec2(..., level=3).  The output is a
-    scalar score; it is detached at the JointLOD boundary and never enters the
-    backward graph.
+    Three successive level-1 transforms are applied to the previous
+    approximation band, matching pywt.wavedec2(..., level=3). The returned
+    scalar is the reference detector's L3 off-diagonal energy:
+    0.5 * (mean(LH3^2) + mean(HL3^2)). The browser converts that energy to
+    band-PSNR before fitting the 10-step slope.
 
     Band extraction uses view + select rather than arange/index_select on
     purpose: it keeps the operator inventory inside the vocabulary the rewrite
@@ -248,9 +249,9 @@ class Sym4Level3Detector(nn.Module):
             x = F.conv2d(padded, ws[0], stride=2, groups=c)   # cA -> next level
         return details
 
-    def forward(self, x):
-        h, v, d = self.bands(x)
-        return (h.abs().mean() + v.abs().mean() + d.abs().mean()) / 3.0
+    def forward(self, residual):
+        h, v, _ = self.bands(residual)
+        return 0.5 * ((h * h).mean() + (v * v).mean())
 
 
 class JointLOD(nn.Module):
@@ -274,7 +275,7 @@ class JointLOD(nn.Module):
             loss = residual.square().mean()
         # Non-loss outputs must be detached for trace_joint=True.  The detector
         # trace is forward-only and never enters the backward graph.
-        score = self.detector(pred)
+        score = self.detector(residual)
         return loss, pred.detach(), score.detach()
 
 
