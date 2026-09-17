@@ -2,6 +2,7 @@ import gatherSrc from './kernels/gather.wgsl?raw';
 import elementwiseSrc from './kernels/elementwise.wgsl?raw';
 import reduceSrc from './kernels/reduce.wgsl?raw';
 import conv2dSrc from './kernels/conv2d.wgsl?raw';
+import conv3x3Src from './kernels/conv3x3.wgsl?raw';
 import gnStatsSrc from './kernels/groupnorm_stats.wgsl?raw';
 import gnApplySrc from './kernels/groupnorm_apply.wgsl?raw';
 import matmulSrc from './kernels/matmul.wgsl?raw';
@@ -56,6 +57,12 @@ export class Runtime {
   /** Matches DISPATCH_STRIDE in the kernels: 65535 * 64. */
   static readonly MAX_GROUPS = 65535;
 
+  /** Grid for kernels that use one workgroup per output element. */
+  static wgGrid(n: number): [number, number, number] {
+    return [Math.min(Math.max(1, n), Runtime.MAX_GROUPS),
+            Math.ceil(Math.max(1, n) / Runtime.MAX_GROUPS), 1];
+  }
+
   private pipelines = new Map<string, GPUComputePipeline>();
 
   /**
@@ -80,6 +87,7 @@ export class Runtime {
     await rt.compile('elementwise', elementwiseSrc);
     await rt.compile('reduce', reduceSrc);
     await rt.compile('conv2d', conv2dSrc);
+    await rt.compile('conv3x3', conv3x3Src);
     await rt.compile('gnStats', gnStatsSrc);
     await rt.compile('gnApply', gnApplySrc);
     await rt.compile('matmul', matmulSrc);
@@ -144,6 +152,23 @@ export class Runtime {
   clearMetaCache(): void {
     for (const b of this.metaCache.values()) b.destroy();
     this.metaCache.clear();
+  }
+
+  /** Dispatch with an explicit workgroup grid (for tiled kernels). */
+  private runGrid(name: string, entries: GPUBindGroupEntry[],
+                  grid: [number, number, number]): void {
+    const pipeline = this.pipelines.get(name);
+    if (!pipeline) throw new Error(`pipeline ${name} not compiled`);
+    const bg = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0), entries,
+    });
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bg);
+    pass.dispatchWorkgroups(grid[0], grid[1], grid[2]);
+    pass.end();
+    this.device.queue.submit([enc.finish()]);
   }
 
   private run(name: string, entries: GPUBindGroupEntry[], threads: number): void {
@@ -256,11 +281,12 @@ export class Runtime {
       count,
       mean ? 1 : 0,
     ];
-    this.run('reduce', [
+    // One workgroup per output element, so the grid counts outputs directly.
+    this.runGrid('reduce', [
       { binding: 0, resource: { buffer: this.i32Buffer(dimsBuf) } },
       { binding: 1, resource: { buffer: src.buffer } },
       { binding: 2, resource: { buffer: out } },
-    ], total);
+    ], Runtime.wgGrid(total));
     return outShape;
   }
 
@@ -271,6 +297,7 @@ export class Runtime {
     p: {
       stride: number[]; padding: number[]; dilation: number[];
       transposed: boolean; groups: number; outShape: number[];
+      outputPadding?: number[];
     },
     out: GPUBuffer,
   ): void {
@@ -278,6 +305,29 @@ export class Runtime {
     const [, , KH, KW] = weight.shape;
     const [, Cout, Hout, Wout] = p.outShape;
     const total = numel(p.outShape);
+
+    // Fast path: the shape almost every decoder convolution takes. Shared-memory
+    // tiling only pays off when the 3x3 window is dense and unstrided, so the
+    // general gather still handles everything else.
+    const fastPath = p.groups === 1
+      && KH === 3 && KW === 3
+      && p.stride[0] === 1 && p.stride[1] === 1
+      && p.padding[0] === 1 && p.padding[1] === 1
+      && p.dilation[0] === 1 && p.dilation[1] === 1
+      && Hout === Hin && Wout === Win
+      && (!p.transposed || (p.outputPadding?.every((v) => v === 0) ?? true));
+    if (fastPath) {
+      const TILE = 16;
+      this.runGrid('conv3x3', [
+        { binding: 0, resource: { buffer: this.i32Buffer(
+            [N, Cin, Hin, Win, Cout, bias ? 1 : 0, p.transposed ? 1 : 0]) } },
+        { binding: 1, resource: { buffer: src.buffer } },
+        { binding: 2, resource: { buffer: weight.buffer } },
+        { binding: 3, resource: { buffer: bias ? bias.buffer : this.dummy } },
+        { binding: 4, resource: { buffer: out } },
+      ], [Math.ceil(Win / TILE), Math.ceil(Hin / TILE), N * Cout]);
+      return;
+    }
     const dims = [
       N, Cin, Hin, Win, Cout, Hout, Wout, KH, KW,
       p.stride[0], p.stride[1], p.padding[0], p.padding[1],
@@ -300,13 +350,13 @@ export class Runtime {
     out: GPUBuffer, mean: GPUBuffer, rstd: GPUBuffer,
   ): void {
     const ng = N * G;
-    this.run('gnStats', [
+    this.runGrid('gnStats', [
       { binding: 0, resource: { buffer: this.i32Buffer([N, C, HxW, G, ng]) } },
       { binding: 1, resource: { buffer: this.f32Buffer([eps]) } },
       { binding: 2, resource: { buffer: src.buffer } },
       { binding: 3, resource: { buffer: mean } },
       { binding: 4, resource: { buffer: rstd } },
-    ], ng);
+    ], Runtime.wgGrid(ng));
     const total = N * C * HxW;
     this.run('gnApply', [
       { binding: 0, resource: { buffer: this.i32Buffer(

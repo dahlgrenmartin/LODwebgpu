@@ -526,6 +526,7 @@ export class Interpreter {
         this.rt.conv2d(x, w, bias, {
           stride: pair(a[3]), padding: pair(a[4]), dilation: pair(a[5]),
           transposed: a[6] === true, groups: Number(this.arg(a[8])),
+          outputPadding: pair(a[7]),
           outShape: shape,
         }, out);
         return result;
