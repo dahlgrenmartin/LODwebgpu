@@ -168,8 +168,12 @@ def build_graph_dynamic(res: int = 16, seed: int = 0, real: bool = True,
 
     # Real tensors created OUTSIDE the fake mode: from_tensor only assigns fresh
     # symbols when it is handed a concrete tensor.
-    rz = torch.empty(1, latent_c, res, res, requires_grad=True)
-    rt = torch.empty(1, out_c, res * 8, res * 8)
+    # Use DIFFERENT height and width in the example, otherwise the shape env
+    # assigns one symbol to both and the exported graph silently only supports
+    # square images.
+    res_h, res_w = res, res + 8
+    rz = torch.empty(1, latent_c, res_h, res_w, requires_grad=True)
+    rt = torch.empty(1, out_c, res_h * 8, res_w * 8)
     mode = FakeTensorMode(shape_env=ShapeEnv(), allow_non_fake_inputs=True)
     with mode:
         fz = mode.from_tensor(rz, static_shapes=False)
@@ -182,8 +186,8 @@ def build_graph_dynamic(res: int = 16, seed: int = 0, real: bool = True,
         gm, sig = aot_export_module(m, (fz, ft), trace_joint=True, output_loss_index=0)
     rw.rewrite(gm)
     wrapper = ExportWrapper(gm, sig, m).eval()
-    z = torch.randn(1, latent_c, res, res)
-    t = torch.randn(1, out_c, res * 8, res * 8)
+    z = torch.randn(1, latent_c, res_h, res_w)
+    t = torch.randn(1, out_c, res_h * 8, res_w * 8)
     return gm, wrapper, z, t
 
 
