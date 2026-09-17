@@ -47,7 +47,20 @@ def test_joint_detector_receives_residual():
     assert torch.allclose(score, residual.mean())
 
 
+def test_flux2_reference_optimizer_config():
+    from export import make_fixtures
+
+    assert make_fixtures.REFERENCE_ADAM == {
+        "lr": 0.03,
+        "beta1": 0.9,
+        "beta2": 0.999,
+        "eps": 1e-8,
+        "steps": 30,
+    }
+
+
 if __name__ == "__main__":
     test_level3_detector_is_lh_hl_energy()
     test_joint_detector_receives_residual()
+    test_flux2_reference_optimizer_config()
     print("detector reference tests passed")
