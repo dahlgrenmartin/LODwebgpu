@@ -81,6 +81,46 @@ async function main() {
       pass: errBad > TOL,
     });
 
+    // --- Adam kernel vs the numpy reference ---
+    {
+      const g = await fetch(`${BASE}/adam_golden.json`).then((r) => r.json());
+      const { Adam } = await import('./adam');
+      const n = g.z0.length;
+      const zBuf = device.createBuffer({
+        size: n * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      });
+      device.queue.writeBuffer(zBuf, 0, new Float32Array(g.z0));
+      const gradBuf = device.createBuffer({
+        size: n * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      const adam = await new Adam(device, n, { ...g.cfg, steps: g.grads.length }).init();
+      for (const grad of g.grads) {
+        device.queue.writeBuffer(gradBuf, 0, new Float32Array(grad));
+        adam.step(zBuf, gradBuf);
+      }
+      const read = device.createBuffer({
+        size: n * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(zBuf, 0, read, 0, n * 4);
+      device.queue.submit([enc.finish()]);
+      await read.mapAsync(GPUMapMode.READ);
+      const got = new Float32Array(read.getMappedRange().slice(0));
+      read.unmap();
+
+      const want = new Float32Array(g.expected);
+      const err = relErr(got, want);
+      cases.push({ name: `adam ${g.grads.length} steps`, maxAbs: err, pass: err <= 1e-4 });
+
+      const perturbed = new Float32Array(want);
+      for (let i = 0; i < perturbed.length; i++) perturbed[i] += 0.5;
+      const errCtl = relErr(got, perturbed);
+      cases.push({
+        name: 'negative control (adam)', maxAbs: errCtl, pass: errCtl > 1e-4,
+      });
+    }
+
     await runner.dispose();
   } catch (e) {
     cases.push({
