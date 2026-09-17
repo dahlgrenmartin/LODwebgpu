@@ -1,4 +1,6 @@
 node_modules/
 dist/
-# generated fixtures: 56 MB, rebuilt with `python export/make_fixtures.py all`
-public/models/
+# Model fixtures ARE committed: GitHub Pages serves only what is in the repo, so
+# ignoring them produced a site that built cleanly and 404'd on every weight.
+# Regenerate with `python export/make_fixtures.py all`, but note that each
+# regeneration adds another copy to history - these binaries do not delta-compress.
