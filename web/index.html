@@ -30,7 +30,7 @@
   #status[data-state="error"] { border-color:var(--bad); color:var(--bad); }
   #status[data-state="done"] { border-color:var(--ok); color:var(--ok); }
   #status[data-state="running"] { border-color:var(--accent); }
-  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:18px; }
+  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
   button, select, input[type=file]::file-selector-button {
     font:inherit; font-size:13px; padding:8px 14px; border-radius:8px;
     border:1px solid var(--line); background:var(--panel); color:var(--ink);
@@ -39,6 +39,22 @@
   button:hover:not(:disabled), select:hover:not(:disabled) { border-color:var(--accent); }
   button:disabled, select:disabled { opacity:0.5; cursor:not-allowed; }
   input[type=file] { font-size:13px; color:var(--muted); }
+  .optimizer {
+    display:grid; grid-template-columns:repeat(5, minmax(90px, 1fr)); gap:10px;
+    margin-bottom:18px; padding:12px; border:1px solid var(--line);
+    border-radius:10px; background:var(--panel);
+  }
+  .optimizer label {
+    display:flex; flex-direction:column; gap:4px; color:var(--muted);
+    font-size:10px; text-transform:uppercase; letter-spacing:0.06em; font-weight:600;
+  }
+  .optimizer input {
+    width:100%; min-width:0; padding:7px 8px; border-radius:7px;
+    border:1px solid var(--line); background:var(--bg); color:var(--ink);
+    font:13px/1.2 var(--mono);
+  }
+  .optimizer input:focus { outline:1px solid var(--accent); border-color:var(--accent); }
+  .optimizer input:disabled { opacity:0.5; cursor:not-allowed; }
   #drop {
     border:1.5px dashed var(--line); border-radius:12px; padding:18px;
     text-align:center; color:var(--muted); font-size:13px; margin-bottom:20px;
@@ -70,6 +86,7 @@
   .warn code { font-family:var(--mono); font-size:11px; }
   @media (max-width:640px) {
     body { padding:20px 16px; }
+    .optimizer { grid-template-columns:repeat(2, minmax(0, 1fr)); }
     .panes { grid-template-columns:1fr; }
     .stats { grid-template-columns:repeat(2, 1fr); }
   }
@@ -96,6 +113,14 @@
     <button id="sample" disabled>Use sample image</button>
   </div>
 
+  <div class="optimizer" aria-label="Optimizer hyperparameters">
+    <label>Learning rate<input id="opt-lr" type="number" min="0" step="any" disabled></label>
+    <label>Beta 1<input id="opt-beta1" type="number" min="0" max="0.999999" step="any" disabled></label>
+    <label>Beta 2<input id="opt-beta2" type="number" min="0" max="0.999999" step="any" disabled></label>
+    <label>Epsilon<input id="opt-eps" type="number" min="0" step="any" disabled></label>
+    <label>Total steps<input id="opt-steps" type="number" min="2" step="1" disabled></label>
+  </div>
+
   <div id="drop">Drop a <strong>1024&times;1024</strong> image here</div>
 
   <div class="panes">
@@ -113,10 +138,11 @@
   </div>
 
   <div class="note">
-    Refinement uses the reference level-1 Sym4 detail-only L1 objective and the
-    FLUX.2 30-step Adam configuration. Detection traces level-3 LH/HL residual
-    band-PSNR and classifies from the final 10-step slope. The right pane is
-    rendered straight from the decoder's GPU output buffer — no image readback.
+    Refinement uses the reference level-1 Sym4 detail-only L1 objective. The
+    optimizer fields above start from the FLUX.2 reference Adam values in the
+    manifest but can be changed for each run. Detection traces level-3 LH/HL
+    residual band-PSNR and classifies from the final slope window. The right pane
+    is rendered straight from the decoder's GPU output buffer — no image readback.
     <a href="/verify.html" style="color:var(--accent)">Verification harness →</a>
   </div>
 </div>
