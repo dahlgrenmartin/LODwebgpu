@@ -108,12 +108,26 @@ export class Runtime {
     }));
   }
 
+  /** Live device allocations made through alloc(), for leak diagnosis. */
+  allocCount = 0;
+  allocBytes = 0;
+
   alloc(count: number, label?: string): GPUBuffer {
+    const size = Math.max(4, count * 4);
+    this.allocCount++;
+    this.allocBytes += size;
     return this.device.createBuffer({
-      size: Math.max(4, count * 4),
+      size,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
       label,
     });
+  }
+
+  /** Release a buffer obtained from alloc(), keeping the accounting honest. */
+  free(b: GPUBuffer): void {
+    this.allocCount--;
+    this.allocBytes -= b.size;
+    b.destroy();
   }
 
   /**
@@ -315,7 +329,8 @@ export class Runtime {
       && p.padding[0] === 1 && p.padding[1] === 1
       && p.dilation[0] === 1 && p.dilation[1] === 1
       && Hout === Hin && Wout === Win
-      && (!p.transposed || (p.outputPadding?.every((v) => v === 0) ?? true));
+      && (!p.transposed || (p.outputPadding?.every((v) => v === 0) ?? true))
+      && Cout % 4 === 0;     // conv3x3 blocks 4 output channels per workgroup
     if (fastPath) {
       const TILE = 16;
       this.runGrid('conv3x3', [
@@ -325,7 +340,8 @@ export class Runtime {
         { binding: 2, resource: { buffer: weight.buffer } },
         { binding: 3, resource: { buffer: bias ? bias.buffer : this.dummy } },
         { binding: 4, resource: { buffer: out } },
-      ], [Math.ceil(Win / TILE), Math.ceil(Hin / TILE), N * Cout]);
+      ], [Math.ceil(Win / TILE), Math.ceil(Hin / TILE),
+          N * Math.ceil(Cout / 4)]);   // COUT_BLOCK = 4 in conv3x3.wgsl
       return;
     }
     const dims = [

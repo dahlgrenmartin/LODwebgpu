@@ -92,22 +92,81 @@ class Pool {
 
   constructor(private rt: Runtime) {}
 
+  /**
+   * Round an allocation up so that similar shapes share a bucket.
+   *
+   * The free list is keyed by exact byte size. The graph's ~1300 intermediates
+   * have many near-but-not-equal sizes - a 96-channel activation and a
+   * 128-channel one, a tensor and its padded twin - and exact-size keying makes
+   * every one of them miss, so the pool allocates a fresh buffer instead of
+   * recycling. Measured at 1024x768 that cost 19.4 GB of device memory for a
+   * graph whose genuinely-live peak is a fraction of it.
+   *
+   * Rounding to eight steps per octave caps the waste at 12.5% while collapsing
+   * the size space enough that reuse actually hits.
+   */
+  private static bucket(size: number): number {
+    if (size <= 4096) return 4096;
+    const octave = 2 ** Math.floor(Math.log2(size));
+    const step = octave / 8;
+    return Math.ceil(size / step) * step;
+  }
+
+  /**
+   * Buffers currently sitting in the free list.
+   *
+   * Aliasing ops make several values share one buffer, so the same buffer can be
+   * offered for release twice in a run; returning it twice would put it in the
+   * free list twice and hand one piece of storage to two live values. Tracking
+   * "has ever been released" instead is not equivalent - a buffer legitimately
+   * cycles between free and live many times per run, and suppressing the later
+   * releases collapses reuse entirely (measured: 19 GB -> 64 GB and a hung
+   * device).
+   */
+  private inFree = new Set<GPUBuffer>();
+
   acquire(count: number, label?: string): GPUBuffer {
-    const size = Math.max(4, count * 4);
-    const bucket = this.free.get(size);
-    const reused = bucket?.pop();
-    if (reused) return reused;
-    this.live += size;
+    const size = Pool.bucket(Math.max(4, count * 4));
+
+    // Exact bucket first, then any larger free buffer up to twice the request.
+    // Buckets alone still stranded memory: a run's free list ends up holding
+    // several sizes that no later node asks for by name, while the node that
+    // does ask wants a size one step up and allocates afresh. A kernel only ever
+    // addresses the elements its shape covers, so oversized storage is safe.
+    // Exact bucket only. Scanning the free list for the smallest buffer that
+    // merely fits was tried and reverted: it recovered 327 MB of the 5.6 GB at
+    // 512x512 and cost 29% of the step time, because the scan runs for all 1282
+    // nodes while the allocation it avoids happens only on the first step.
+    const reused = this.free.get(size)?.pop();
+    // Charge the buffer's real size, not the request: best-fit can hand back
+    // storage larger than asked for, and releasing it credits buffer.size.
+    if (reused) {
+      this.inFree.delete(reused);
+      this.live += reused.size;
+      this.peak = Math.max(this.peak, this.live);
+      return reused;
+    }
+    const fresh = this.rt.alloc(size / 4, label);
+    this.live += fresh.size;
     this.peak = Math.max(this.peak, this.live);
-    return this.rt.alloc(count, label);
+    return fresh;
   }
 
   release(buffer: GPUBuffer): void {
+    if (this.inFree.has(buffer)) return;
+    this.inFree.add(buffer);
     const size = buffer.size;
     const bucket = this.free.get(size) ?? [];
     bucket.push(buffer);
     this.free.set(size, bucket);
+    this.live -= size;
   }
+
+  /** Reset the live count between runs; buffers stay in the free list. */
+  endRun(): void { this.live = 0; }
+
+  /** Current live bytes, for the residency profile. */
+  get liveBytes(): number { return this.live; }
 }
 
 export class Interpreter {
@@ -281,6 +340,33 @@ export class Interpreter {
     return new Map();
   }
 
+  /**
+   * Persistent destination for each graph output.
+   *
+   * Outputs are copied out of the pool so a later node cannot overwrite them,
+   * but allocating that copy per run leaked one buffer per output per step -
+   * 6 MB a step at 512x512, none of it ever freed. The shape is fixed for a
+   * given input size, so one buffer per label is reused for every step and
+   * replaced only if the size changes.
+   */
+  private outputBuffers = new Map<string, GPUBuffer>();
+
+  private outputBuffer(label: string, count: number): GPUBuffer {
+    const want = Math.max(4, count * 4);
+    const hit = this.outputBuffers.get(label);
+    if (hit && hit.size === want) return hit;
+    if (hit) this.rt.free(hit);
+    const b = this.rt.alloc(count, `out:${label}`);
+    this.outputBuffers.set(label, b);
+    return b;
+  }
+
+  /** Peak bytes the intermediate pool has had live, for leak diagnosis. */
+  get poolPeakBytes(): number { return this.pool.peak; }
+
+  /** When set, live pool bytes are recorded after each node (debug only). */
+  profile: number[] | null = null;
+
   /** When set, every node's output statistics are recorded (slow; debug only). */
   trace: { name: string; op: string; shape: number[]; mean: number; absmax: number }[] | null = null;
 
@@ -314,6 +400,11 @@ export class Interpreter {
     for (const o of this.doc.outputs) lastUse.set(o.name, Number.MAX_SAFE_INTEGER);
     const outputNames = new Map(this.doc.outputs.map((o) => [o.name, o.label]));
     const snapshots = new Map<string, Tensor>();
+
+    const release = (b: GPUBuffer): void => {
+      if (protectedBuffers.has(b)) return;
+      this.pool.release(b);
+    };
 
     for (let i = 0; i < this.doc.nodes.length; i++) {
       const node = this.doc.nodes[i];
@@ -353,11 +444,13 @@ export class Interpreter {
       if (label) {
         const v = this.values.get(node.name);
         if (v && isTensor(v)) {
-          const keep = this.rt.alloc(numel(v.shape), `out:${label}`);
+          const keep = this.outputBuffer(label, numel(v.shape));
           this.rt.gather(v, contiguousStrides(v.shape), v.shape, keep);
           snapshots.set(label, { buffer: keep, shape: v.shape });
         }
       }
+
+      if (this.profile) this.profile.push(this.pool.liveBytes);
 
       // Recycle any buffer whose last consumer was this node.
       for (const [name, idx] of lastUse) {
@@ -368,9 +461,19 @@ export class Interpreter {
         const stillNeeded = [...lastUse].some(
           ([n2, i2]) => i2 > i && isTensor(this.values.get(n2) as Value) &&
             (this.values.get(n2) as Tensor).buffer === v.buffer);
-        if (!stillNeeded) this.pool.release(v.buffer);
+        if (!stillNeeded) release(v.buffer);
       }
     }
+
+    // The outputs are pinned above so nothing can overwrite them mid-run, which
+    // also means the loop never releases them: four buffers a step that the pool
+    // then had to replace with fresh device allocations. Their values are safe in
+    // the snapshots by now, so hand the storage back.
+    for (const v of this.values.values()) {
+      if (isTensor(v as Value)) release((v as Tensor).buffer);
+    }
+
+    this.pool.endRun();
 
     const out: Record<string, Tensor> = {};
     for (const o of this.doc.outputs) {
