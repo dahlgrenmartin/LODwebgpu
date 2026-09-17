@@ -1,0 +1,108 @@
+{
+  "resolutions": [
+    {
+      "width": 256,
+      "height": 256,
+      "latent": [
+        1,
+        32,
+        32,
+        32
+      ],
+      "numel": 32768,
+      "graph": "lod_joint_256x256.onnx"
+    },
+    {
+      "width": 512,
+      "height": 512,
+      "latent": [
+        1,
+        32,
+        64,
+        64
+      ],
+      "numel": 131072,
+      "graph": "lod_joint_512x512.onnx"
+    },
+    {
+      "width": 768,
+      "height": 768,
+      "latent": [
+        1,
+        32,
+        96,
+        96
+      ],
+      "numel": 294912,
+      "graph": "lod_joint_768x768.onnx"
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "latent": [
+        1,
+        32,
+        96,
+        128
+      ],
+      "numel": 393216,
+      "graph": "lod_joint_1024x768.onnx"
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "latent": [
+        1,
+        32,
+        128,
+        96
+      ],
+      "numel": 393216,
+      "graph": "lod_joint_768x1024.onnx"
+    },
+    {
+      "width": 768,
+      "height": 512,
+      "latent": [
+        1,
+        32,
+        64,
+        96
+      ],
+      "numel": 196608,
+      "graph": "lod_joint_768x512.onnx"
+    },
+    {
+      "width": 512,
+      "height": 768,
+      "latent": [
+        1,
+        32,
+        96,
+        64
+      ],
+      "numel": 196608,
+      "graph": "lod_joint_512x768.onnx"
+    }
+  ],
+  "weights": "weights.bin",
+  "encoder": "encoder.onnx",
+  "encoderWeights": "encoder_weights.bin",
+  "adam": {
+    "lr": 0.03,
+    "beta1": 0.9,
+    "beta2": 0.999,
+    "eps": 1e-08,
+    "steps": 30
+  },
+  "outputs": [
+    "loss",
+    "pred",
+    "score",
+    "grad_z"
+  ],
+  "inputs": [
+    "z",
+    "target"
+  ]
+}

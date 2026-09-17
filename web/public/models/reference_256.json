@@ -1,0 +1,52 @@
+{
+  "z": {
+    "offset": 0,
+    "count": 32768,
+    "shape": [
+      1,
+      32,
+      32,
+      32
+    ]
+  },
+  "target": {
+    "offset": 32768,
+    "count": 196608,
+    "shape": [
+      1,
+      3,
+      256,
+      256
+    ]
+  },
+  "loss": {
+    "offset": 229376,
+    "count": 1,
+    "shape": []
+  },
+  "pred": {
+    "offset": 229377,
+    "count": 196608,
+    "shape": [
+      1,
+      3,
+      256,
+      256
+    ]
+  },
+  "score": {
+    "offset": 425985,
+    "count": 1,
+    "shape": []
+  },
+  "grad_z": {
+    "offset": 425986,
+    "count": 32768,
+    "shape": [
+      1,
+      32,
+      32,
+      32
+    ]
+  }
+}
