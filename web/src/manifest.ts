@@ -8,6 +8,7 @@ export interface Resolution {
 
 export interface Manifest {
   resolutions: Resolution[]; weights: string; encoder: string;
+  encoderWeights: string;
   adam: AdamConfig; inputs: string[]; outputs: string[];
 }
 

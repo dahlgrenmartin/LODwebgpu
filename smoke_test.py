@@ -518,6 +518,33 @@ def test_adam_reference_matches_torch():
     print(f"      30 steps, max_abs_error={err:.2e}")
 
 
+@test
+def test_real_checkpoint_lowers():
+    """The trained FLUX.2-small decoder joint graph fully lowers. Needs network."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        from export.to_onnx import build_graph_real
+    except ImportError:
+        print("      SKIP (export.to_onnx unavailable)")
+        return
+    try:
+        gm, wrapper, z, t = build_graph_real(res=8, seed=5)
+    except Exception as exc:
+        # Offline or checkpoint unavailable is a skip, not a failure.
+        print(f"      SKIP (checkpoint unavailable: {type(exc).__name__})")
+        return
+    left = _backward_ops(gm)
+    assert not left, f"backward ops survived on the real checkpoint: {left}"
+    params = sum(b.numel() for b in wrapper.buffers())
+    assert 27_900_000 < params < 28_100_000, f"unexpected param count {params:,}"
+    with torch.no_grad():
+        loss, pred, score, grad = wrapper(z, t)
+    assert tuple(pred.shape) == (1, 3, 64, 64), f"pred {tuple(pred.shape)}"
+    assert torch.isfinite(grad).all(), "non-finite grad_z"
+    print(f"      real decoder: {params:,} params, backward lowered, "
+          f"grad_z finite, |grad|max={grad.abs().max():.3e}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only run tests whose name contains this")

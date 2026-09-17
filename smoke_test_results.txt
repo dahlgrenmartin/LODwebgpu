@@ -1,4 +1,4 @@
-torch=2.12.0.dev20260308+cu128  running 13/13 tests
+torch=2.12.0.dev20260308+cu128  running 16/16 tests
 
 [ RUN  ] test_sym4_matches_pywt
          Sym4 detail filters reproduce pywt.dwt2(mode='zero') coefficient-exactly.
@@ -102,4 +102,28 @@ torch=2.12.0.dev20260308+cu128  running 13/13 tests
       6 tensors, 114690 floats total
 [  OK  ]
 
-PASSED 13/13
+[ RUN  ] test_encoder_export_dynamic_shapes
+         Encoder exports once and accepts both demo resolutions.
+[torch.onnx] Obtain model graph for `_EncoderMean([...]` with `torch.export.export(..., strict=False)`...
+[torch.onnx] Obtain model graph for `_EncoderMean([...]` with `torch.export.export(..., strict=False)`... ✅
+[torch.onnx] Run decompositions...
+[torch.onnx] Run decompositions... ✅
+[torch.onnx] Translate the graph into ONNX...
+[torch.onnx] Translate the graph into ONNX... ✅
+[torch.onnx] Optimize the ONNX graph...
+[torch.onnx] Optimize the ONNX graph... ✅
+      128x128 -> (1, 32, 16, 16)
+      256x256 -> (1, 32, 32, 32)
+[  OK  ]
+
+[ RUN  ] test_adam_reference_matches_torch
+         numpy Adam reproduces torch.optim.Adam over a fixed gradient sequence.
+      30 steps, max_abs_error=2.38e-07
+[  OK  ]
+
+[ RUN  ] test_real_checkpoint_lowers
+         The trained FLUX.2-small decoder joint graph fully lowers. Needs network.
+      real decoder: 27,948,835 params, backward lowered, grad_z finite, |grad|max=1.269e-04
+[  OK  ]
+
+PASSED 16/16

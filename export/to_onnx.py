@@ -103,6 +103,78 @@ def export_joint(res: int, out_dir: Path, fp16: bool = False,
     return path
 
 
+class RealJointLOD(torch.nn.Module):
+    """The real FLUX.2-small VAE decoder wired to the LOD loss and detector.
+
+    Mirrors AutoencoderKLFlux2._decode exactly: post_quant_conv then decoder.
+    Everything is frozen, so every backward node is input-gradient-only and the
+    rewrite applies unchanged.
+    """
+
+    def __init__(self, vae):
+        super().__init__()
+        self.post_quant_conv = getattr(vae, "post_quant_conv", None)
+        self.decoder = vae.decoder
+        self.sym4 = probe.Sym4Level1Loss()
+        self.detector = probe.Sym4Level3Detector(channels=3)
+        for p in self.parameters():
+            p.requires_grad_(False)
+
+    def forward(self, z, target):
+        h = z if self.post_quant_conv is None else self.post_quant_conv(z)
+        pred = self.decoder(h)
+        loss = self.sym4(pred - target)
+        score = self.detector(pred)
+        return loss, pred.detach(), score.detach()
+
+
+def load_real_vae(model_id: str = "black-forest-labs/FLUX.2-small-decoder"):
+    from diffusers import AutoencoderKLFlux2
+    vae = AutoencoderKLFlux2.from_pretrained(model_id, torch_dtype=torch.float32).eval()
+    # Force the explicit bmm/softmax attention path; the fused SDPA kernel emits
+    # _scaled_dot_product_flash_attention_backward, which nothing lowers.
+    try:
+        vae.set_default_attn_processor()
+    except Exception:
+        pass
+    return vae
+
+
+def build_graph_real(res: int, seed: int = 0,
+                     model_id: str = "black-forest-labs/FLUX.2-small-decoder"):
+    """Same contract as build_graph, but with the trained checkpoint."""
+    torch.manual_seed(seed)
+    vae = load_real_vae(model_id)
+    m = RealJointLOD(vae).eval()
+    z = torch.randn(1, vae.config.latent_channels, res, res)
+    t = torch.randn(1, vae.config.out_channels, res * 8, res * 8)
+    mode = FakeTensorMode(allow_non_fake_inputs=True)
+    with mode:
+        fz = torch.empty(1, vae.config.latent_channels, res, res, requires_grad=True)
+        ft = torch.empty(1, vae.config.out_channels, res * 8, res * 8)
+        gm, sig = aot_export_module(m, (fz, ft), trace_joint=True, output_loss_index=0)
+    rw.rewrite(gm)
+    wrapper = ExportWrapper(gm, sig, m).eval()
+    return gm, wrapper, z, t
+
+
+def export_joint_real(res: int, out_dir: Path, fp16: bool = False,
+                      external_data: bool = False, seed: int = 0,
+                      model_id: str = "black-forest-labs/FLUX.2-small-decoder") -> Path:
+    gm, wrapper, z, t = build_graph_real(res, seed=seed, model_id=model_id)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"lod_joint_{res * 8}.onnx"
+    torch.onnx.export(
+        wrapper, (z, t), str(path),
+        input_names=INPUT_NAMES, output_names=OUTPUT_NAMES,
+        opset_version=18, dynamo=True,
+    )
+    if fp16 or external_data:
+        finalize(path, fp16=fp16, external_data=external_data)
+    return path
+
+
 def _to_fp16_initializers(model) -> None:
     """Store initializers as fp16 and insert Cast->fp32 so compute stays fp32."""
     import numpy as np
@@ -140,7 +212,8 @@ def _to_fp16_initializers(model) -> None:
             name="cast_" + original))
 
 
-def finalize(path: Path, fp16: bool, external_data: bool) -> None:
+def finalize(path: Path, fp16: bool, external_data: bool,
+             location: str = "weights.bin") -> None:
     import onnx
     from onnx.external_data_helper import convert_model_to_external_data
 
@@ -149,7 +222,7 @@ def finalize(path: Path, fp16: bool, external_data: bool) -> None:
         _to_fp16_initializers(model)
     if external_data:
         convert_model_to_external_data(
-            model, all_tensors_to_one_file=True, location="weights.bin",
+            model, all_tensors_to_one_file=True, location=location,
             size_threshold=1024, convert_attribute=False)
     onnx.save(model, str(path))
 
@@ -178,12 +251,11 @@ class _EncoderMean(torch.nn.Module):
         return h[:, : self.latent_channels]      # mean half of (mean, logvar)
 
 
-def export_encoder(out_dir: Path, model_id: str = None) -> Path:
+def export_encoder(out_dir: Path, model_id: str = None, fp16: bool = False,
+                   external_data: bool = False) -> Path:
     from diffusers.models.autoencoders.vae import Encoder
     if model_id:
-        from diffusers import AutoencoderKLFlux2
-        vae = AutoencoderKLFlux2.from_pretrained(
-            model_id, torch_dtype=torch.float32).eval()
+        vae = load_real_vae(model_id)
         module = _EncoderMean(vae.encoder, getattr(vae, "quant_conv", None),
                               vae.config.latent_channels)
     else:
@@ -207,6 +279,9 @@ def export_encoder(out_dir: Path, model_id: str = None) -> Path:
                       "latent_mean": {2: "lh", 3: "lw"}},
         opset_version=18, dynamo=True,
     )
+    if fp16 or external_data:
+        finalize(path, fp16=fp16, external_data=external_data,
+                 location="encoder_weights.bin")
     return path
 
 
@@ -221,6 +296,7 @@ def write_manifest(out_dir: Path, resolutions: list, adam: dict) -> Path:
         ],
         "weights": "weights.bin",
         "encoder": "encoder.onnx",
+        "encoderWeights": "encoder_weights.bin",
         "adam": adam,
         "outputs": OUTPUT_NAMES,
         "inputs": INPUT_NAMES,

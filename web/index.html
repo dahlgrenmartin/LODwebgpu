@@ -22,6 +22,7 @@
   .wrap { max-width: 880px; margin: 0 auto; }
   h1 { font-size:22px; margin:0 0 4px; letter-spacing:-0.01em; }
   .sub { color:var(--muted); font-size:13px; margin-bottom:22px; }
+  .sub code { font-family:var(--mono); font-size:12px; }
   #status {
     padding:12px 16px; border-radius:10px; border:1px solid var(--line);
     background:var(--panel); font-size:13px; margin-bottom:18px;
@@ -77,9 +78,10 @@
 <div class="wrap">
   <h1>LOD latent optimization</h1>
   <div class="sub">
-    A frozen FLUX.2-small decoder, optimized through its own backward pass — in the
-    browser, on WebGPU. The gradient is computed by a graph whose backward ops were
-    rewritten into forward-only operators.
+    The trained <code>black-forest-labs/FLUX.2-small-decoder</code> VAE (27.9M
+    parameters), optimized through its own backward pass — in the browser, on
+    WebGPU. The gradient comes from a graph whose backward ops were rewritten into
+    forward-only operators.
   </div>
 
   <div id="status" data-state="boot">Starting…</div>
@@ -101,16 +103,6 @@
     <div class="stat"><div class="k">Loss</div><div class="v" id="loss">—</div></div>
     <div class="stat"><div class="k">Detector</div><div class="v" id="score">—</div></div>
     <div class="stat"><div class="k">Per step</div><div class="v" id="rate">—</div></div>
-  </div>
-
-  <div class="warn">
-    <strong>The decoder has random weights.</strong> This build uses the structural
-    reconstruction of FLUX.2-small, not the trained checkpoint, so the decoded pane
-    will be noise no matter how well the optimization runs. Everything around it is
-    real — the encoder, the rewritten backward pass, the gradient, and Adam are all
-    verified against PyTorch — but a recognizable image needs
-    <code>black-forest-labs/FLUX.2-small-decoder</code> exported in place of the
-    random-weight model.
   </div>
 
   <div class="note">

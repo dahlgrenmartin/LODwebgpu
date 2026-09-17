@@ -100,7 +100,8 @@ async function run(source: Blob): Promise<void> {
     const { buffer: zBuf, numel, shape: zShape } = await initLatent(
       device, `${BASE}/encoder.onnx`, image.data, image.shape,
       { factor: 1.0, shift: 0.0 },
-      [{ path: 'encoder.onnx.data', data: `${BASE}/encoder.onnx.data` }]);
+      [{ path: manifest.encoderWeights,
+         data: `${BASE}/${manifest.encoderWeights}` }]);
 
     const target = new ort.Tensor('float32', image.data, image.shape);
     const adam = await new Adam(device, numel, manifest.adam).init();

@@ -26,6 +26,7 @@ OUT = ROOT / "web" / "public" / "models"
 FIXTURE_ADAM = {"lr": 0.05, "beta1": 0.9, "beta2": 0.999, "eps": 1e-8, "steps": 30}
 SEED = 5
 RES = 16   # latent 16 -> 128x128 image
+MODEL_ID = "black-forest-labs/FLUX.2-small-decoder"
 
 
 def stage_m0() -> None:
@@ -56,6 +57,18 @@ def stage_adam() -> None:
     print(f"adam golden -> {OUT / 'adam_golden.json'}")
 
 
+def stage_real() -> None:
+    """Everything the demo needs, built from the trained FLUX.2-small checkpoint."""
+    from export.to_onnx import export_joint_real, export_encoder, write_manifest
+    from export.reference import dump_reference_real
+    OUT.mkdir(parents=True, exist_ok=True)
+    export_joint_real(res=RES, out_dir=OUT, fp16=True, external_data=True, seed=SEED)
+    dump_reference_real(res=RES, out_dir=OUT, seed=SEED)
+    export_encoder(OUT, model_id=MODEL_ID, fp16=True, external_data=True)
+    write_manifest(OUT, [RES], FIXTURE_ADAM)
+    print(f"real-checkpoint fixtures -> {OUT}")
+
+
 def stage_encoder() -> None:
     from export.to_onnx import export_encoder
     OUT.mkdir(parents=True, exist_ok=True)
@@ -63,7 +76,8 @@ def stage_encoder() -> None:
     print(f"encoder -> {OUT / 'encoder.onnx'}")
 
 
-STAGES = {"m0": stage_m0, "adam": stage_adam, "encoder": stage_encoder}
+STAGES = {"m0": stage_m0, "adam": stage_adam, "encoder": stage_encoder,
+          "real": stage_real}
 
 
 if __name__ == "__main__":

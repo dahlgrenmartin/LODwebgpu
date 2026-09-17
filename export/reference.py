@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from export.to_onnx import build_graph
+from export.to_onnx import build_graph, build_graph_real
 
 
 def dump_reference(res: int, out_dir: Path, seed: int = 5) -> Path:
@@ -16,6 +16,16 @@ def dump_reference(res: int, out_dir: Path, seed: int = 5) -> Path:
     with torch.no_grad():
         loss, pred, score, grad_z = wrapper(z, t)
 
+    return _write_named(z, t, loss, pred, score, grad_z, res, out_dir)
+
+
+def _write(wrapper, z, t, res: int, out_dir: Path) -> Path:
+    with torch.no_grad():
+        loss, pred, score, grad_z = wrapper(z, t)
+    return _write_named(z, t, loss, pred, score, grad_z, res, out_dir)
+
+
+def _write_named(z, t, loss, pred, score, grad_z, res: int, out_dir: Path) -> Path:
     named = {"z": z, "target": t, "loss": loss, "pred": pred,
              "score": score, "grad_z": grad_z}
     out_dir = Path(out_dir)
@@ -34,3 +44,10 @@ def dump_reference(res: int, out_dir: Path, seed: int = 5) -> Path:
     Path(str(blob).replace(".bin", ".json")).write_text(
         json.dumps(meta, indent=2), encoding="utf-8")
     return blob
+
+
+def dump_reference_real(res: int, out_dir: Path, seed: int = 5,
+                        model_id: str = "black-forest-labs/FLUX.2-small-decoder") -> Path:
+    """Golden tensors from the trained checkpoint, same layout as dump_reference."""
+    _, wrapper, z, t = build_graph_real(res=res, seed=seed, model_id=model_id)
+    return _write(wrapper, z, t, res, out_dir)

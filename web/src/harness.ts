@@ -128,7 +128,8 @@ async function main() {
       const { buffer, numel, shape } = await initLatent(
         device, `${BASE}/encoder.onnx`, img, [1, 3, image, image],
         { factor: 1.0, shift: 0.0 },
-        [{ path: 'encoder.onnx.data', data: `${BASE}/encoder.onnx.data` }]);
+        [{ path: manifest.encoderWeights,
+         data: `${BASE}/${manifest.encoderWeights}` }]);
       const expected = 32 * (image / 8) * (image / 8);
       cases.push({
         name: `latent init shape ${JSON.stringify(shape)}`,
