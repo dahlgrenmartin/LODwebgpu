@@ -446,7 +446,8 @@ def clear_outputs(out_dir: Path) -> int:
 
 
 def dedupe_external_data(out_dir: Path, location: str = "weights.bin",
-                         pattern: str = "lod_joint_*.onnx") -> dict:
+                         pattern: str = "lod_joint_*.onnx",
+                         max_bytes: int = 90 * 1024 * 1024) -> dict:
     """Collapse per-model copies of identical weights into one shared blob.
 
     onnx.save APPENDS to an external-data file, so exporting N resolutions writes
@@ -480,6 +481,7 @@ def dedupe_external_data(out_dir: Path, location: str = "weights.bin",
 
     # Pass 1: one entry per distinct content hash.
     canonical: dict[str, tuple[int, int]] = {}
+    blob_by_digest: dict[str, bytes] = {}
     chunks: list[bytes] = []
     cursor = 0
     loaded = []
@@ -495,10 +497,15 @@ def dedupe_external_data(out_dir: Path, location: str = "weights.bin",
             digest = hashlib.sha256(data).hexdigest()
             if digest not in canonical:
                 canonical[digest] = (cursor, length)
+                blob_by_digest[digest] = data
                 chunks.append(data)
                 cursor += length
 
-    # Pass 2: repoint every model at the shared copy.
+    # Map each model's old span onto the canonical copy it should share.
+    chunk_by_offset = {}
+    for digest, (off, length) in canonical.items():
+        chunk_by_offset[off] = blob_by_digest[digest]
+    span_to_canonical = {}
     for path, model in loaded:
         for init in model.graph.initializer:
             span = ext(init)
@@ -506,18 +513,49 @@ def dedupe_external_data(out_dir: Path, location: str = "weights.bin",
                 continue
             off, length = span
             digest = hashlib.sha256(blob[off:off + length]).hexdigest()
-            new_off, new_len = canonical[digest]
+            span_to_canonical[span] = canonical[digest]
+
+    # Shard the shared blob: GitHub rejects any file over 100 MB, and SDXL's
+    # decoder alone is 94 MB in fp16, so a single file has no headroom. ONNX
+    # carries a location per tensor, so shards cost nothing at load time.
+    shards: list[list[bytes]] = [[]]
+    shard_len = [0]
+    placement: dict[tuple[int, int], tuple[int, int]] = {}
+    # Walk in canonical order so offsets stay deterministic.
+    ordered = sorted(canonical.items(), key=lambda kv: kv[1][0])
+    for digest, (old_off, length) in ordered:
+        if shard_len[-1] and shard_len[-1] + length > max_bytes:
+            shards.append([])
+            shard_len.append(0)
+        placement[(old_off, length)] = (len(shards) - 1, shard_len[-1])
+        shards[-1].append(chunk_by_offset[old_off])
+        shard_len[-1] += length
+
+    names = [f"{Path(location).stem}-{i:02d}{Path(location).suffix}"
+             if len(shards) > 1 else location for i in range(len(shards))]
+    for name, parts in zip(names, shards):
+        (out_dir / name).write_bytes(b"".join(parts))
+    if len(shards) > 1 and blob_path.exists():
+        blob_path.unlink()
+
+    for path, model in loaded:
+        for init in model.graph.initializer:
+            span = ext(init)
+            if span is None:
+                continue
+            shard_i, shard_off = placement[span_to_canonical[span]]
             for entry in init.external_data:
                 if entry.key == "offset":
-                    entry.value = str(new_off)
-                elif entry.key == "length":
-                    entry.value = str(new_len)
+                    entry.value = str(shard_off)
+                elif entry.key == "location":
+                    entry.value = names[shard_i]
         onnx.save(model, str(path))
 
-    blob_path.write_bytes(b"".join(chunks))
     return {"models": len(loaded), "tensors": len(canonical),
             "before_mb": len(blob) / 1048576,
-            "after_mb": cursor / 1048576}
+            "after_mb": cursor / 1048576,
+            "shards": names,
+            "shard_mb": [round(n / 1048576, 1) for n in shard_len]}
 
 
 def write_manifest(out_dir: Path, resolutions: list, adam: dict,

@@ -27,7 +27,8 @@ def graph_filename(width: int, height: int) -> str:
 
 
 def write_manifest(out_dir: Path, sizes: list[tuple[int, int]], adam: dict,
-                   latent_channels: int = 32) -> Path:
+                   latent_channels: int = 32,
+                   weights: list[str] | str = "weights.bin") -> Path:
     """Write the browser manifest for exact ORT image sizes.
 
     ``sizes`` are image ``(width, height)`` pairs. Latent dimensions are NCHW,
@@ -57,7 +58,9 @@ def write_manifest(out_dir: Path, sizes: list[tuple[int, int]], adam: dict,
 
     manifest = {
         "resolutions": resolutions,
-        "weights": "weights.bin",
+        # A list: the shared blob is sharded when it would exceed GitHub's
+        # 100 MB per-file limit, which SDXL's decoder does on its own.
+        "weights": [weights] if isinstance(weights, str) else list(weights),
         "encoder": "encoder.onnx",
         "encoderWeights": "encoder_weights.bin",
         "adam": adam,

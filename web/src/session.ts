@@ -1,5 +1,5 @@
 import * as ort from 'onnxruntime-web/webgpu';
-import { findResolution, formatSupportedSizes, type Manifest, type Resolution } from './manifest';
+import { weightFiles, findResolution, formatSupportedSizes, type Manifest, type Resolution } from './manifest';
 
 export interface Runner {
   device: GPUDevice;
@@ -41,7 +41,8 @@ export async function createSession(
     `${baseUrl}/${resolution.graph}`,
     {
       executionProviders: ['webgpu'],
-      externalData: [{ path: manifest.weights, data: `${baseUrl}/${manifest.weights}` }],
+      externalData: weightFiles(manifest).map((f) => (
+        { path: f, data: `${baseUrl}/${f}` })),
       // Keeping pred and grad_z on the device lets the render pass bind pred
       // directly and Adam consume grad_z without a round trip.
       ...(outputsOnGpu

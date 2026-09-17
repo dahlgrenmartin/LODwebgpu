@@ -5,11 +5,11 @@
       "height": 256,
       "latent": [
         1,
-        32,
+        4,
         32,
         32
       ],
-      "numel": 32768,
+      "numel": 4096,
       "graph": "lod_joint_256x256.onnx"
     },
     {
@@ -17,11 +17,11 @@
       "height": 512,
       "latent": [
         1,
-        32,
+        4,
         64,
         64
       ],
-      "numel": 131072,
+      "numel": 16384,
       "graph": "lod_joint_512x512.onnx"
     },
     {
@@ -29,11 +29,11 @@
       "height": 768,
       "latent": [
         1,
-        32,
+        4,
         96,
         96
       ],
-      "numel": 294912,
+      "numel": 36864,
       "graph": "lod_joint_768x768.onnx"
     },
     {
@@ -41,11 +41,11 @@
       "height": 768,
       "latent": [
         1,
-        32,
+        4,
         96,
         128
       ],
-      "numel": 393216,
+      "numel": 49152,
       "graph": "lod_joint_1024x768.onnx"
     },
     {
@@ -53,11 +53,11 @@
       "height": 1024,
       "latent": [
         1,
-        32,
+        4,
         128,
         96
       ],
-      "numel": 393216,
+      "numel": 49152,
       "graph": "lod_joint_768x1024.onnx"
     },
     {
@@ -65,11 +65,11 @@
       "height": 512,
       "latent": [
         1,
-        32,
+        4,
         64,
         96
       ],
-      "numel": 196608,
+      "numel": 24576,
       "graph": "lod_joint_768x512.onnx"
     },
     {
@@ -77,15 +77,18 @@
       "height": 768,
       "latent": [
         1,
-        32,
+        4,
         96,
         64
       ],
-      "numel": 196608,
+      "numel": 24576,
       "graph": "lod_joint_512x768.onnx"
     }
   ],
-  "weights": "weights.bin",
+  "weights": [
+    "weights-00.bin",
+    "weights-01.bin"
+  ],
   "encoder": "encoder.onnx",
   "encoderWeights": "encoder_weights.bin",
   "adam": {

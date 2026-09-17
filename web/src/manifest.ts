@@ -7,7 +7,10 @@ export interface Resolution {
 }
 
 export interface Manifest {
-  resolutions: Resolution[]; weights: string; encoder: string;
+  resolutions: Resolution[];
+  /** One or more shared weight files; sharded to stay under 100 MB each. */
+  weights: string | string[];
+  encoder: string;
   encoderWeights: string;
   adam: AdamConfig; inputs: string[]; outputs: string[];
 }
@@ -52,4 +55,10 @@ export async function loadManifest(url: string): Promise<Manifest> {
     }
   }
   return m;
+}
+
+
+/** The shared weight files, tolerating the older single-string manifests. */
+export function weightFiles(m: Pick<Manifest, 'weights'>): string[] {
+  return Array.isArray(m.weights) ? m.weights : [m.weights];
 }

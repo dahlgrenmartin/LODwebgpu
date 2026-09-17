@@ -125,11 +125,22 @@ def stage_real() -> None:
 
     # The verification harness only needs one golden trajectory; use the first
     # supported square size so it can run against the first manifest entry.
-    dump_reference_real(res=REFERENCE_RES, out_dir=OUT, seed=SEED)
+    # Must use the SAME checkpoint as everything else: its default is FLUX.2,
+    # so omitting model_id silently produces golden tensors from a different
+    # model - which only surfaces as a latent-channel mismatch at run time.
+    dump_reference_real(res=REFERENCE_RES, out_dir=OUT, seed=SEED,
+                        model_id=MODEL_ID)
     export_encoder(OUT, model_id=MODEL_ID, fp16=True, external_data=True)
     _export_wgsl_graph(real=True)
+    # Each static export appends its own copy of the weights, so collapse them
+    # to one shared set and shard it under the 100 MB per-file limit.
+    from export.to_onnx import dedupe_external_data
+    report = dedupe_external_data(OUT)
+    print(f"weights {report['before_mb']:.1f} MB -> "
+          f"{report['shards']} = {report['shard_mb']} MB")
     write_manifest(OUT, ORT_SIZES, ADAM_BY_MODEL.get(MODEL_ID, REFERENCE_ADAM),
-                   latent_channels=vae.config.latent_channels)
+                   latent_channels=vae.config.latent_channels,
+                   weights=report["shards"])
     print(f"real-checkpoint fixtures -> {OUT}  "
           f"[{MODEL_ID}, latent_channels={vae.config.latent_channels}]")
 

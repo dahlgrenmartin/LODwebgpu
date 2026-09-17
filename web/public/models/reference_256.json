@@ -1,16 +1,16 @@
 {
   "z": {
     "offset": 0,
-    "count": 32768,
+    "count": 4096,
     "shape": [
       1,
-      32,
+      4,
       32,
       32
     ]
   },
   "target": {
-    "offset": 32768,
+    "offset": 4096,
     "count": 196608,
     "shape": [
       1,
@@ -20,12 +20,12 @@
     ]
   },
   "loss": {
-    "offset": 229376,
+    "offset": 200704,
     "count": 1,
     "shape": []
   },
   "pred": {
-    "offset": 229377,
+    "offset": 200705,
     "count": 196608,
     "shape": [
       1,
@@ -35,16 +35,16 @@
     ]
   },
   "score": {
-    "offset": 425985,
+    "offset": 397313,
     "count": 1,
     "shape": []
   },
   "grad_z": {
-    "offset": 425986,
-    "count": 32768,
+    "offset": 397314,
+    "count": 4096,
     "shape": [
       1,
-      32,
+      4,
       32,
       32
     ]
