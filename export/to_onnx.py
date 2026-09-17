@@ -251,8 +251,26 @@ class RealJointLOD(torch.nn.Module):
 
 
 def load_real_vae(model_id: str = "black-forest-labs/FLUX.2-small-decoder"):
-    from diffusers import AutoencoderKLFlux2
-    vae = AutoencoderKLFlux2.from_pretrained(model_id, torch_dtype=torch.float32).eval()
+    """Load any diffusers VAE whose decoder is the shared vae.Decoder class.
+
+    FLUX.2, SD 1.5 and SDXL all wrap that same decoder, which is why one rewrite
+    covers them; only the wrapper class and the latent channel count differ.
+    Dispatch on the checkpoint's own _class_name rather than guessing from the
+    repository id.
+    """
+    import json
+
+    import diffusers
+    from huggingface_hub import hf_hub_download
+
+    cls_name = "AutoencoderKL"
+    try:
+        cfg_path = hf_hub_download(model_id, "config.json")
+        cls_name = json.load(open(cfg_path)).get("_class_name", cls_name)
+    except Exception:
+        pass
+    cls = getattr(diffusers, cls_name, None) or diffusers.AutoencoderKL
+    vae = cls.from_pretrained(model_id, torch_dtype=torch.float32).eval()
     # Force the explicit bmm/softmax attention path; the fused SDPA kernel emits
     # _scaled_dot_product_flash_attention_backward, which nothing lowers.
     try:
@@ -502,13 +520,15 @@ def dedupe_external_data(out_dir: Path, location: str = "weights.bin",
             "after_mb": cursor / 1048576}
 
 
-def write_manifest(out_dir: Path, resolutions: list, adam: dict) -> Path:
+def write_manifest(out_dir: Path, resolutions: list, adam: dict,
+                   latent_channels: int = 32) -> Path:
     for key in ("lr", "beta1", "beta2", "eps", "steps"):
         if key not in adam:
             raise KeyError(f"adam.{key} is required and has no default")
     manifest = {
         "resolutions": [
-            {"image": r * 8, "latent": [1, 32, r, r], "numel": 32 * r * r,
+            {"image": r * 8, "latent": [1, latent_channels, r, r],
+             "numel": latent_channels * r * r,
              "graph": f"lod_joint_{r * 8}.onnx"} for r in resolutions
         ],
         "weights": "weights.bin",

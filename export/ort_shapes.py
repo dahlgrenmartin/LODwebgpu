@@ -26,11 +26,14 @@ def graph_filename(width: int, height: int) -> str:
     return f"lod_joint_{width}x{height}.onnx"
 
 
-def write_manifest(out_dir: Path, sizes: list[tuple[int, int]], adam: dict) -> Path:
+def write_manifest(out_dir: Path, sizes: list[tuple[int, int]], adam: dict,
+                   latent_channels: int = 32) -> Path:
     """Write the browser manifest for exact ORT image sizes.
 
     ``sizes`` are image ``(width, height)`` pairs. Latent dimensions are NCHW,
-    so the stored latent shape is ``[1, 32, height/8, width/8]``.
+    so the stored latent shape is ``[1, latent_channels, height/8, width/8]``.
+    The channel count is model-specific: FLUX.2-small uses 32, SD 1.5 and
+    SDXL use 4.
     """
     for key in ("lr", "beta1", "beta2", "eps", "steps"):
         if key not in adam:
@@ -47,8 +50,8 @@ def write_manifest(out_dir: Path, sizes: list[tuple[int, int]], adam: dict) -> P
         resolutions.append({
             "width": width,
             "height": height,
-            "latent": [1, 32, latent_h, latent_w],
-            "numel": 32 * latent_h * latent_w,
+            "latent": [1, latent_channels, latent_h, latent_w],
+            "numel": latent_channels * latent_h * latent_w,
             "graph": graph_filename(width, height),
         })
 

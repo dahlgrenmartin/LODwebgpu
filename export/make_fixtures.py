@@ -13,6 +13,7 @@ lives here rather than inline.
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import sys
 from pathlib import Path
@@ -29,7 +30,19 @@ REFERENCE_ADAM = {"lr": 0.03, "beta1": 0.9, "beta2": 0.999, "eps": 1e-8, "steps"
 SEED = 5
 DYNAMIC_RES = 16   # symbolic-capture example only; not an ORT supported size
 REFERENCE_RES = 32 # 256x256 verification fixture
-MODEL_ID = "black-forest-labs/FLUX.2-small-decoder"
+# Selectable checkpoint: FLUX.2, SD 1.5 and SDXL all wrap the same
+# diffusers vae.Decoder, so one rewrite covers them. Override with
+# LOD_MODEL_ID=madebyollin/sdxl-vae-fp16-fix python export/make_fixtures.py real
+MODEL_ID = os.environ.get("LOD_MODEL_ID", "black-forest-labs/FLUX.2-small-decoder")
+
+# Per-model optimizer settings. The FLUX.2 values come from the reference LOD
+# implementation; SDXL's latent is 4 channels rather than 32, so the same step
+# size does not transfer and its lr is a starting point, not a reference value.
+ADAM_BY_MODEL = {
+    "madebyollin/sdxl-vae-fp16-fix": {
+        "lr": 0.03, "beta1": 0.9, "beta2": 0.999, "eps": 1e-8, "steps": 30,
+    },
+}
 
 # Exact ORT-Web image shapes, expressed as (width, height).
 ORT_SIZES = [
@@ -90,7 +103,7 @@ def stage_adam() -> None:
 
 
 def stage_real() -> None:
-    """Everything the demo needs, built from the trained FLUX.2-small checkpoint."""
+    """Everything the demo needs, built from the selected VAE checkpoint."""
     from export.ort_shapes import export_joint_real_shape, write_manifest
     from export.to_onnx import export_encoder, clear_outputs, load_real_vae
     from export.reference import dump_reference_real
@@ -115,8 +128,10 @@ def stage_real() -> None:
     dump_reference_real(res=REFERENCE_RES, out_dir=OUT, seed=SEED)
     export_encoder(OUT, model_id=MODEL_ID, fp16=True, external_data=True)
     _export_wgsl_graph(real=True)
-    write_manifest(OUT, ORT_SIZES, REFERENCE_ADAM)
-    print(f"real-checkpoint fixtures -> {OUT}")
+    write_manifest(OUT, ORT_SIZES, ADAM_BY_MODEL.get(MODEL_ID, REFERENCE_ADAM),
+                   latent_channels=vae.config.latent_channels)
+    print(f"real-checkpoint fixtures -> {OUT}  "
+          f"[{MODEL_ID}, latent_channels={vae.config.latent_channels}]")
 
 
 def stage_encoder() -> None:
