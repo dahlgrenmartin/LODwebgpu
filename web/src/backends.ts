@@ -1,10 +1,11 @@
 import * as ort from 'onnxruntime-web/webgpu';
 import type { Manifest } from './manifest';
-import { createSession } from './session';
+import { createSession, type Runner } from './session';
 import { Runtime, createMaxDevice, type Tensor } from './wgsl/runtime';
 import { Interpreter } from './wgsl/interpreter';
 
 export type BackendName = 'ort' | 'wgsl';
+export interface ImageSize { width: number; height: number; }
 
 export interface StepOutputs {
   loss: number;
@@ -17,10 +18,13 @@ export interface StepOutputs {
 
 export interface Backend {
   readonly name: BackendName;
+  /** Available after prepare(width, height) for ORT; immediate for WGSL. */
   readonly device: GPUDevice;
-  /** Non-null when only one exact square size is accepted. */
-  readonly fixedSize: number | null;
-  /** Upload a latent for this backend's device. */
+  /** Exact accepted image shapes, or null for the shape-agnostic WGSL path. */
+  readonly supportedSizes: readonly ImageSize[] | null;
+  /** Select/load any shape-specific resources before tensors are uploaded. */
+  prepare(width: number, height: number): Promise<void>;
+  /** Upload a latent for this backend's current device. */
   uploadLatent(data: Float32Array, shape: number[]): { buffer: GPUBuffer; shape: number[] };
   setTarget(data: Float32Array, shape: number[]): void;
   step(z: { buffer: GPUBuffer; shape: number[] }): Promise<StepOutputs>;
@@ -30,26 +34,46 @@ export interface Backend {
 /**
  * ONNX Runtime Web on the WebGPU EP.
  *
- * Tuned kernels, but the graph is shape-static: one exported model per
- * resolution, so only that exact size is accepted.
+ * Each supported width x height has its own static graph. A session is loaded
+ * lazily after the image is decoded, and only one static session is retained at
+ * a time so seven supported shapes do not multiply GPU/session memory at boot.
  */
 class OrtBackend implements Backend {
   readonly name = 'ort' as const;
+  readonly supportedSizes: readonly ImageSize[];
+  private runner: Runner | null = null;
   private target: ort.Tensor | null = null;
 
-  constructor(
-    readonly device: GPUDevice,
-    readonly fixedSize: number,
-    private runner: Awaited<ReturnType<typeof createSession>>,
-  ) {}
+  constructor(private manifest: Manifest, private base: string) {
+    this.supportedSizes = manifest.resolutions.map(
+      (r) => ({ width: r.width, height: r.height }));
+  }
+
+  get device(): GPUDevice {
+    if (!this.runner) {
+      throw new Error('ORT backend has no device until prepare(width, height) completes');
+    }
+    return this.runner.device;
+  }
 
   static async create(manifest: Manifest, base: string): Promise<OrtBackend> {
-    const image = manifest.resolutions[0].image;
-    const runner = await createSession(manifest, image, base, true);
-    return new OrtBackend(runner.device, image, runner);
+    return new OrtBackend(manifest, base);
+  }
+
+  async prepare(width: number, height: number): Promise<void> {
+    const r = this.runner?.resolution;
+    if (r?.width === width && r.height === height) return;
+
+    // Drop the previous static graph before constructing another one. This keeps
+    // switching resolution from retaining multiple large ORT sessions.
+    if (this.runner) await this.runner.dispose();
+    this.runner = null;
+    this.target = null;
+    this.runner = await createSession(this.manifest, width, height, this.base, true);
   }
 
   uploadLatent(data: Float32Array, shape: number[]) {
+    if (!this.runner) throw new Error('ORT backend must be prepared before upload');
     const buffer = this.device.createBuffer({
       size: data.byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
@@ -59,10 +83,12 @@ class OrtBackend implements Backend {
   }
 
   setTarget(data: Float32Array, shape: number[]): void {
+    if (!this.runner) throw new Error('ORT backend must be prepared before target upload');
     this.target = new ort.Tensor('float32', data, shape);
   }
 
   async step(z: { buffer: GPUBuffer; shape: number[] }): Promise<StepOutputs> {
+    if (!this.runner) throw new Error('ORT backend not prepared');
     if (!this.target) throw new Error('target not set');
     const zt = ort.Tensor.fromGpuBuffer(z.buffer, { dataType: 'float32', dims: z.shape });
     const out = await this.runner.run(zt, this.target);
@@ -76,7 +102,9 @@ class OrtBackend implements Backend {
   }
 
   async dispose(): Promise<void> {
-    await this.runner.dispose();
+    if (this.runner) await this.runner.dispose();
+    this.runner = null;
+    this.target = null;
   }
 }
 
@@ -89,7 +117,7 @@ class OrtBackend implements Backend {
  */
 class WgslBackend implements Backend {
   readonly name = 'wgsl' as const;
-  readonly fixedSize = null;
+  readonly supportedSizes = null;
   private target: { buffer: GPUBuffer; shape: number[] } | null = null;
 
   constructor(
@@ -103,6 +131,10 @@ class WgslBackend implements Backend {
     const rt = await Runtime.create(device);
     const interp = await Interpreter.load(rt, `${base}/lod_graph.json`, base);
     return new WgslBackend(device, rt, interp);
+  }
+
+  async prepare(_width: number, _height: number): Promise<void> {
+    // Dynamic graph: no shape-specific resource to load.
   }
 
   uploadLatent(data: Float32Array, shape: number[]) {
