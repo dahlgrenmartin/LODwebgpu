@@ -185,7 +185,7 @@ def normalize_layout_ops(gm):
             n.replace_all_uses_with(y); g.erase_node(n); stats['permute']+=1
     return stats
 
-def rewrite(gm):
+def rewrite(gm, example_args=None):
     stats={}
     stats['conv_bwd']=lower_conv_backward_input(gm)
     stats['gn_bwd']=lower_group_norm_backward_input(gm)
@@ -195,6 +195,14 @@ def rewrite(gm):
     stats['detach']=strip_detach(gm)
     stats['layout']=normalize_layout_ops(gm)
     gm.graph.eliminate_dead_code(); gm.graph.lint(); gm.recompile()
+    if example_args is not None:
+        # Nodes created by the passes above carry empty meta.  Export paths and
+        # _shape() both require meta['val'], so re-propagate over the whole graph.
+        from torch.fx.passes.fake_tensor_prop import FakeTensorProp
+        from torch._subclasses.fake_tensor import FakeTensorMode as _FTM
+        mode=next((a.fake_mode for a in example_args
+                   if hasattr(a,'fake_mode') and a.fake_mode is not None), None)
+        FakeTensorProp(gm, mode=mode or _FTM(allow_non_fake_inputs=True)).propagate(*example_args)
     return stats
 
 

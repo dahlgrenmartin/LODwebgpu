@@ -54,6 +54,26 @@ def _backward_ops(gm):
     return {k: v for k, v in _counts(gm).items() if "backward" in k}
 
 
+def _placeholder_args(gm, sig, module, z, target, mode=None):
+    """Build the positional arg list for a lifted joint graph, in placeholder order."""
+    state = module.state_dict()
+    umap = {sig.user_inputs[0]: z, sig.user_inputs[1]: target}
+    args = []
+    for n in gm.graph.nodes:
+        if n.op != "placeholder":
+            continue
+        if n.name in sig.inputs_to_parameters:
+            t = state[sig.inputs_to_parameters[n.name]]
+        elif n.name in sig.inputs_to_buffers:
+            t = state[sig.inputs_to_buffers[n.name]]
+        elif n.name in umap:
+            t = umap[n.name]
+        else:
+            raise KeyError(n.name)
+        args.append(mode.from_tensor(t) if mode is not None else t)
+    return args
+
+
 def _capture(module, z, target):
     with FakeTensorMode(allow_non_fake_inputs=True):
         gm, sig = aot_export_module(module, (z, target), trace_joint=True, output_loss_index=0)
@@ -293,6 +313,24 @@ def test_joint_outputs_image_and_score():
     rw.rewrite(gm)
     assert not _backward_ops(gm), f"backward survived: {_backward_ops(gm)}"
     print(f"      outputs: loss{shapes[0]} pred{shapes[1]} score{shapes[2]} grad_z{shapes[3]}")
+
+
+@test
+def test_rewrite_repopulates_meta():
+    """Every rewritten node carries meta['val'] so export can consume the graph."""
+    m = probe.JointLOD("sym4").eval()
+    mode = FakeTensorMode(allow_non_fake_inputs=True)
+    with mode:
+        z = torch.empty(1, 32, 4, 4, requires_grad=True)
+        t = torch.empty(1, 3, 32, 32)
+        gm, sig = aot_export_module(m, (z, t), trace_joint=True, output_loss_index=0)
+        args = _placeholder_args(gm, sig, m, z, t, mode)
+    rw.rewrite(gm, example_args=args)
+    missing = [n.name for n in gm.graph.nodes
+               if n.op == "call_function" and "val" not in n.meta]
+    assert not missing, f"{len(missing)} nodes without meta['val']: {missing[:5]}"
+    total = sum(1 for n in gm.graph.nodes if n.op == "call_function")
+    print(f"      all {total} call_function nodes have meta['val']")
 
 
 def main():
