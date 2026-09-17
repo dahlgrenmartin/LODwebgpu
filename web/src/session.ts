@@ -1,5 +1,5 @@
 import * as ort from 'onnxruntime-web/webgpu';
-import type { Manifest, Resolution } from './manifest';
+import { findResolution, formatSupportedSizes, type Manifest, type Resolution } from './manifest';
 
 export interface Runner {
   device: GPUDevice;
@@ -22,16 +22,17 @@ export async function assertWebGpu(): Promise<GPUAdapterInfo | null> {
   return adapter.info ?? null;
 }
 
-/**
- * Create the joint-graph session on a device we own, so a render pass can bind
- * ORT's output buffers directly instead of round-tripping through the CPU.
- */
+/** Create the exact static joint-graph session for one image shape. */
 export async function createSession(
-  manifest: Manifest, image: number, baseUrl: string,
+  manifest: Manifest, width: number, height: number, baseUrl: string,
   outputsOnGpu = false,
 ): Promise<Runner> {
-  const resolution = manifest.resolutions.find((r) => r.image === image);
-  if (!resolution) throw new Error(`no resolution ${image} in manifest`);
+  const resolution = findResolution(manifest, width, height);
+  if (!resolution) {
+    throw new Error(
+      `no ONNX graph for ${width}x${height}; supported: ` +
+      formatSupportedSizes(manifest.resolutions));
+  }
 
   // ORT-Web cannot resolve external data from the filesystem the way native ORT
   // does; the weights file has to be handed over explicitly, keyed by the same
@@ -50,8 +51,6 @@ export async function createSession(
   );
 
   // ort.env.webgpu.device resolves to the device ORT created for this session.
-  // It is a promise, not a plain property -- awaiting it is what makes buffer
-  // interop work at all, since buffers cannot cross GPUDevice boundaries.
   const device = await ort.env.webgpu.device;
   if (!device) {
     throw new Error('ORT-Web did not expose a WebGPU device after session creation');
