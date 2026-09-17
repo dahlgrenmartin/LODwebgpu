@@ -46,28 +46,17 @@ jobs:
       - name: Type-check
         run: npx tsc --noEmit
 
+      - name: Check model fixtures are present
+        # vite copies an absent public/models without complaint: the build stays
+        # green and every weight 404s on the live site.
+        run: node scripts/check-fixtures.mjs public/models
+
       - name: Build
         env:
           # A project page is served from /<repo>/; a user/org page from /.
           # github.event.repository.name gives the former without hardcoding it.
           VITE_BASE: /${{ github.event.repository.name }}/
         run: npx vite build
-
-      - name: Check model fixtures are present
-        # vite silently copies an empty public/models if the fixtures are not in
-        # the repo: the build stays green and every weight 404s on the live site.
-        run: |
-          missing=$(node -e "
-            const fs=require('fs');
-            const m=JSON.parse(fs.readFileSync('public/models/manifest.json','utf8'));
-            const need=[...m.resolutions.map(r=>r.graph), m.weights, m.encoder,
-                        m.encoderWeights, 'lod_graph.json', 'lod_graph.weights.bin'];
-            console.log(need.filter(f=>!fs.existsSync('public/models/'+f)).join(' '));
-          ")
-          if [ -n "$missing" ]; then
-            echo "::error::model fixtures missing from the repo: $missing"; exit 1
-          fi
-          echo "all model fixtures present ($(du -sm public/models | cut -f1) MB)"
 
       - name: Check Pages limits
         run: |
@@ -77,9 +66,7 @@ jobs:
             echo "::error::files over GitHub's 100 MB limit:"; echo "$big"; exit 1
           fi
           echo "no file exceeds 100 MB"
-          test -f dist/models/manifest.json || {
-            echo "::error::dist/models is empty - the published site would 404"; exit 1; }
-          echo "dist/models populated: $(ls dist/models | wc -l) files"
+          node scripts/check-fixtures.mjs dist/models
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
