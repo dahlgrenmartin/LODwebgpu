@@ -11,9 +11,9 @@ export interface PreparedImage {
 }
 
 /**
- * Decode a user-supplied image and take a native-resolution `size` x `size` crop.
+ * Decode a user-supplied image, which must already be exactly `size` x `size`.
  *
- * No resampling happens anywhere in this function: the crop is a 1:1 pixel copy.
+ * Nothing is resampled and nothing is cropped: the pixels reach the VAE as given.
  * `imageOrientation: 'from-image'` applies EXIF rotation, which phone photos rely
  * on; without it portrait shots arrive sideways.  Alpha is dropped.
  */
@@ -28,32 +28,29 @@ export async function prepareImage(
     throw new Error(`could not decode that file as an image (${(e as Error).message})`);
   }
 
-  // NEVER resample.  The Sym4 level-1 loss and the level-3 detector both read
-  // high-frequency detail coefficients; any rescale rewrites exactly those, so a
-  // score computed on a resized image measures the resampler rather than the
-  // image.  We take a native-resolution crop instead - the retained pixels pass
-  // through bit-exact.
-  if (bitmap.width < size || bitmap.height < size) {
+  // The image must reach the VAE byte-for-byte. Resizing rewrites the
+  // high-frequency detail the wavelet detector reads; cropping removes evidence
+  // from the frame. Neither is acceptable for detection, so an image that is not
+  // exactly the model's size is refused rather than altered.
+  if (bitmap.width !== size || bitmap.height !== size) {
     const w = bitmap.width;
     const h = bitmap.height;
     bitmap.close();
     throw new Error(
-      `Image is ${w}x${h}, smaller than the ${size}x${size} window. Upscaling ` +
-      `would fabricate detail the wavelet detector reads as signal, so it is ` +
-      `refused - please use an image at least ${size}x${size}.`);
+      `This build accepts exactly ${size}x${size} images; yours is ${w}x${h}. ` +
+      `It is not resized or cropped, because either would alter the detail the ` +
+      `detector measures. Arbitrary sizes need the shape-agnostic runtime.`);
   }
-
-  const sx = Math.floor((bitmap.width - size) / 2);
-  const sy = Math.floor((bitmap.height - size) / 2);
 
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('2D canvas context unavailable');
-  // Source rect and destination rect are the same size => 1:1 pixel copy.
-  ctx.drawImage(bitmap, sx, sy, size, size, 0, 0, size, size);
+  ctx.drawImage(bitmap, 0, 0);   // 1:1, no scaling, no offset
   const sourceSize = { w: bitmap.width, h: bitmap.height };
+  const sx = 0;
+  const sy = 0;
   bitmap.close();
 
   const preview = ctx.getImageData(0, 0, size, size);

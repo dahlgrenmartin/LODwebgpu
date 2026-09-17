@@ -97,8 +97,7 @@ async function run(source: Blob): Promise<void> {
     }
     els.before.getContext('2d')!.putImageData(image.preview, 0, 0);
     els.crop.textContent =
-      `${image.sourceSize.w}x${image.sourceSize.h} source, native ${imageSize}x` +
-      `${imageSize} crop at (${image.crop.x}, ${image.crop.y}) - no resampling`;
+      `${image.sourceSize.w}x${image.sourceSize.h} in, unaltered - no resize, no crop`;
 
     setState('encoding', 'Encoding to latent…');
     const { buffer: zBuf, numel, shape: zShape } = await initLatent(
