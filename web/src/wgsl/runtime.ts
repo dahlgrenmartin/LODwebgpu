@@ -108,22 +108,42 @@ export class Runtime {
     });
   }
 
-  private i32Buffer(values: number[]): GPUBuffer {
+  /**
+   * Metadata buffers, cached by content.
+   *
+   * These describe shapes and strides, so for a fixed input size a node's values
+   * are identical on every step - and many nodes share them outright. Allocating
+   * fresh ones per dispatch cost ~8000 buffer creations per step, which
+   * dominated everything the kernels actually did.
+   */
+  private metaCache = new Map<string, GPUBuffer>();
+
+  private cached(values: number[], kind: 'i32' | 'f32'): GPUBuffer {
+    const key = `${kind}:${values.join(',')}`;
+    const hit = this.metaCache.get(key);
+    if (hit) return hit;
     const b = this.device.createBuffer({
       size: Math.max(4, values.length * 4),
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.device.queue.writeBuffer(b, 0, new Int32Array(values));
+    this.device.queue.writeBuffer(
+      b, 0, kind === 'i32' ? new Int32Array(values) : new Float32Array(values));
+    this.metaCache.set(key, b);
     return b;
   }
 
+  private i32Buffer(values: number[]): GPUBuffer {
+    return this.cached(values, 'i32');
+  }
+
   private f32Buffer(values: number[]): GPUBuffer {
-    const b = this.device.createBuffer({
-      size: Math.max(4, values.length * 4),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    this.device.queue.writeBuffer(b, 0, new Float32Array(values));
-    return b;
+    return this.cached(values, 'f32');
+  }
+
+  /** Drop cached metadata, e.g. when the input size changes. */
+  clearMetaCache(): void {
+    for (const b of this.metaCache.values()) b.destroy();
+    this.metaCache.clear();
   }
 
   private run(name: string, entries: GPUBindGroupEntry[], threads: number): void {
