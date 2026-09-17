@@ -1,5 +1,5 @@
 export interface PreparedImage {
-  /** NCHW fp32 in [-1, 1], shape [1, 3, size, size]. */
+  /** NCHW fp32 in [-1, 1], shape [1, 3, height, width]. */
   data: Float32Array;
   shape: number[];
   /** sRGB bytes for the "before" preview. */
@@ -14,12 +14,12 @@ export interface PreparedImage {
  * Decode a user-supplied image and hand its pixels to the VAE unaltered.
  *
  * Nothing is resampled and nothing is cropped. What varies between backends is
- * only which sizes are *accepted*, never what happens to the pixels.
- * `imageOrientation: 'from-image'` applies EXIF rotation, which phone photos rely
- * on; without it portrait shots arrive sideways.  Alpha is dropped.
+ * only which sizes are accepted, never what happens to the pixels.
  */
 export interface SizePolicy {
-  /** Require exactly this square size (the fixed-shape ONNX backend). */
+  /** Exact width x height shapes accepted by the static ONNX backend. */
+  allowed?: readonly { width: number; height: number }[] | null;
+  /** Legacy square exact-size policy, retained for harness compatibility. */
   exact?: number | null;
   /** Otherwise accept the native size if both sides divide by this. */
   multipleOf?: number;
@@ -42,7 +42,17 @@ export async function prepareImage(
   // high-frequency detail the wavelet detector reads; cropping removes evidence
   // from the frame. Neither is acceptable, so anything that does not fit is
   // refused rather than altered.
-  if (policy.exact != null) {
+  if (policy.allowed) {
+    const accepted = policy.allowed.some((s) => s.width === w && s.height === h);
+    if (!accepted) {
+      const supported = policy.allowed.map((s) => `${s.width}x${s.height}`).join(', ');
+      bitmap.close();
+      throw new Error(
+        `The ONNX backend does not have a graph for ${w}x${h}. Supported sizes: ` +
+        `${supported}. The image is not cropped or resized; switch to WGSL for ` +
+        `other native sizes.`);
+    }
+  } else if (policy.exact != null) {
     if (w !== policy.exact || h !== policy.exact) {
       bitmap.close();
       throw new Error(
@@ -82,31 +92,29 @@ export async function prepareImage(
   return { data, shape: [1, 3, size.h, size.w], preview, sourceSize, crop: { x: 0, y: 0 } };
 }
 
-/**
- * A deterministic stand-in image, used when no file has been chosen so the demo
- * is usable without an upload and so the pipeline is testable headlessly.
- */
-export function sampleImage(size: number): Blob {
+/** A deterministic stand-in image used by the demo and headless harness. */
+export function sampleImage(width: number, height: number = width): Blob {
   const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext('2d')!;
-  const g = ctx.createLinearGradient(0, 0, size, size);
+  const g = ctx.createLinearGradient(0, 0, width, height);
   g.addColorStop(0, '#1f3b73');
   g.addColorStop(0.5, '#c94f7c');
   g.addColorStop(1, '#f2c14e');
   ctx.fillStyle = g;
-  ctx.fillRect(0, 0, size, size);
+  ctx.fillRect(0, 0, width, height);
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  const minSide = Math.min(width, height);
   for (let i = 0; i < 6; i++) {
     ctx.beginPath();
-    ctx.arc(size * (0.2 + 0.12 * i), size * (0.3 + 0.08 * (i % 3)),
-            size * 0.06, 0, Math.PI * 2);
+    ctx.arc(width * (0.2 + 0.12 * i), height * (0.3 + 0.08 * (i % 3)),
+            minSide * 0.06, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-  ctx.lineWidth = Math.max(2, size / 64);
-  ctx.strokeRect(size * 0.1, size * 0.1, size * 0.8, size * 0.8);
+  ctx.lineWidth = Math.max(2, minSide / 64);
+  ctx.strokeRect(width * 0.1, height * 0.1, width * 0.8, height * 0.8);
 
   const url = canvas.toDataURL('image/png');
   const bin = atob(url.split(',')[1]);
