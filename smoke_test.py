@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""Smoke test for the FLUX.2-small LOD -> WebGPU rewrite pipeline.
+
+Unlike the original validate_flux2_rewrites.py (which only printed numbers),
+every check here asserts and the process exits non-zero on failure.
+
+    python smoke_test.py            # all tests
+    python smoke_test.py -k sym4    # substring filter
+    python smoke_test.py --json out.json
+"""
+from __future__ import annotations
+
+import argparse
+import collections
+import copy
+import importlib.util
+import json
+import sys
+import traceback
+from pathlib import Path
+
+import torch
+import torch.nn.functional as F
+from torch._functorch.aot_autograd import aot_export_module
+from torch._subclasses.fake_tensor import FakeTensorMode
+
+ROOT = Path(__file__).resolve().parent
+
+
+def _load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, ROOT / filename)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+probe = _load("probe", "flux2_lod_aot_probe.py")
+rw = _load("rw", "flux2_targeted_rewrites.py")
+
+TESTS = []
+RESULTS = {}
+
+
+def test(fn):
+    TESTS.append(fn)
+    return fn
+
+
+def _counts(gm):
+    return collections.Counter(rw.opname(n) for n in gm.graph.nodes if rw.opname(n))
+
+
+def _backward_ops(gm):
+    return {k: v for k, v in _counts(gm).items() if "backward" in k}
+
+
+def _capture(module, z, target):
+    with FakeTensorMode(allow_non_fake_inputs=True):
+        gm, sig = aot_export_module(module, (z, target), trace_joint=True, output_loss_index=0)
+    return gm, sig
+
+
+@test
+def test_sym4_matches_pywt():
+    """Sym4 detail filters reproduce pywt.dwt2(mode='zero') coefficient-exactly."""
+    try:
+        import pywt
+        import numpy as np
+    except ImportError:
+        print("      SKIP (pywt not installed)")
+        RESULTS["sym4"] = "skipped"
+        return
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((1, 3, 32, 32))
+    kernels = probe.Sym4Level1Loss().kernels.to(torch.float64)
+    xt = torch.tensor(x, dtype=torch.float64)
+    d = F.conv2d(F.pad(xt, (6, 6, 6, 6)), kernels, stride=2, groups=3)
+
+    _, (cH, cV, cD) = pywt.dwt2(x[0, 0], "sym4", mode="zero")
+    got = [d[0, i].numpy() for i in range(3)]
+    errs_out = {}
+    for name, ref in (("cH", cH), ("cV", cV), ("cD", cD)):
+        errs = [np.abs(g - ref).max() if g.shape == ref.shape else np.inf for g in got]
+        best = int(np.argmin(errs))
+        assert errs[best] < 1e-6, f"{name}: no matching detail band (best err {errs[best]:.3e})"
+        errs_out[name] = float(errs[best])
+        print(f"      {name}: kernel {best}, shape={ref.shape}, max_err={errs[best]:.2e}")
+    RESULTS["sym4"] = errs_out
+
+
+@test
+def test_structural_rewrite_eliminates_backward():
+    """Structural probe graph lowers with zero *_backward ops remaining."""
+    m = probe.JointLOD("sym4").eval()
+    with FakeTensorMode(allow_non_fake_inputs=True):
+        z = torch.empty(1, 32, 8, 8, requires_grad=True)
+        t = torch.empty(1, 3, 64, 64)
+        gm, _ = aot_export_module(m, (z, t), trace_joint=True, output_loss_index=0)
+    pre = _backward_ops(gm)
+    assert pre, "expected backward ops before rewrite"
+    stats = rw.rewrite(gm)
+    left = _backward_ops(gm)
+    assert not left, f"backward ops survived: {left}"
+    for key, want in (("conv_bwd", 37), ("gn_bwd", 30), ("softmax_bwd", 1), ("sigmoid_bwd", 29)):
+        assert stats[key] == want, f"{key}={stats[key]}, expected {want}"
+    scalar = {k: v for k, v in stats.items() if k != "layout"}
+    print(f"      lowered {dict(pre)} -> {{}}")
+    print(f"      stats={scalar}")
+    RESULTS["structural"] = scalar
+
+
+@test
+def test_rewrite_is_numerically_exact():
+    """Rewritten graph matches the original joint graph to fp32 roundoff."""
+    torch.manual_seed(123)
+    m = probe.JointLOD("sym4").eval()
+    z = torch.randn(1, 32, 2, 2, requires_grad=True)
+    t = torch.randn(1, 3, 16, 16)
+    gm, sig = aot_export_module(m, (z, t), trace_joint=True, output_loss_index=0)
+    gm2 = copy.deepcopy(gm)
+    rw.rewrite(gm2)
+
+    state = m.state_dict()
+    umap = {sig.user_inputs[0]: z.detach(), sig.user_inputs[1]: t}
+    args = []
+    for n in gm.graph.nodes:
+        if n.op != "placeholder":
+            continue
+        if n.name in sig.inputs_to_parameters:
+            args.append(state[sig.inputs_to_parameters[n.name]])
+        elif n.name in sig.inputs_to_buffers:
+            args.append(state[sig.inputs_to_buffers[n.name]])
+        elif n.name in umap:
+            args.append(umap[n.name])
+        else:
+            raise KeyError(n.name)
+
+    with torch.no_grad():
+        ref, got = gm(*args), gm2(*args)
+    assert len(ref) == len(got), f"output count changed: {len(ref)} -> {len(got)}"
+
+    tol = [0.0, 0.0, 1e-7]
+    errs = []
+    for i, (a, b) in enumerate(zip(ref, got)):
+        assert isinstance(a, torch.Tensor) == isinstance(b, torch.Tensor), f"output[{i}] type changed"
+        if not isinstance(a, torch.Tensor):
+            assert a == b, f"output[{i}] non-tensor mismatch {a} != {b}"
+            continue
+        err = (a - b).abs().max().item()
+        assert err <= tol[i], f"output[{i}] max_abs_error={err:.3e} > tol {tol[i]:.3e}"
+        errs.append(err)
+        print(f"      output[{i}] shape={tuple(a.shape)} max_abs_error={err:.3e} (tol {tol[i]:.1e})")
+    RESULTS["numerical"] = errs
+
+
+@test
+def test_groupnorm_rank3_lowers():
+    """Rank-3 GroupNorm (the Diffusers AttnProcessor path) lowers, not just NCHW."""
+
+    class M(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gn = torch.nn.GroupNorm(4, 16, eps=1e-6)
+            for p in self.gn.parameters():
+                p.requires_grad_(False)
+
+        def forward(self, z, t):
+            y = self.gn(z)
+            return (y - t).abs().mean(), y.mean().detach()
+
+    with FakeTensorMode(allow_non_fake_inputs=True):
+        z = torch.empty(1, 16, 9, requires_grad=True)
+        t = torch.empty(1, 16, 9)
+        gm, _ = aot_export_module(M().eval(), (z, t), trace_joint=True, output_loss_index=0)
+    assert any("group_norm_backward" in k for k in _counts(gm)), "no groupnorm backward captured"
+    rw.rewrite(gm)
+    assert not _backward_ops(gm), f"backward survived: {_backward_ops(gm)}"
+    print("      rank-3 [1,16,9] GroupNorm backward lowered")
+
+
+@test
+def test_groupnorm_non_affine_lowers():
+    """affine=False GroupNorm (weight=None) lowers instead of crashing."""
+
+    class M(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gn = torch.nn.GroupNorm(4, 16, eps=1e-6, affine=False)
+
+        def forward(self, z, t):
+            y = self.gn(z)
+            return (y - t).abs().mean(), y.mean().detach()
+
+    with FakeTensorMode(allow_non_fake_inputs=True):
+        z = torch.empty(1, 16, 4, 4, requires_grad=True)
+        t = torch.empty(1, 16, 4, 4)
+        gm, _ = aot_export_module(M().eval(), (z, t), trace_joint=True, output_loss_index=0)
+    rw.rewrite(gm)
+    assert not _backward_ops(gm), f"backward survived: {_backward_ops(gm)}"
+    print("      affine=False GroupNorm backward lowered")
+
+
+@test
+def test_real_diffusers_decoder_lowers():
+    """The real Diffusers Decoder (the class AutoencoderKLFlux2 uses) fully lowers."""
+    try:
+        from diffusers.models.autoencoders.vae import Decoder
+        from diffusers.models.attention_processor import AttnProcessor
+    except ImportError:
+        print("      SKIP (diffusers not installed)")
+        RESULTS["real_decoder"] = "skipped"
+        return
+
+    d = Decoder(
+        in_channels=8, out_channels=3, up_block_types=("UpDecoderBlock2D",) * 3,
+        block_out_channels=(32, 32, 64), layers_per_block=1, norm_num_groups=32,
+    ).eval()
+    for p in d.parameters():
+        p.requires_grad_(False)
+    for mod in d.modules():
+        if hasattr(mod, "set_processor"):
+            mod.set_processor(AttnProcessor())
+
+    class J(torch.nn.Module):
+        def __init__(self, dec):
+            super().__init__()
+            self.d = dec
+
+        def forward(self, z, t):
+            pred = self.d(z)
+            return (pred - t).abs().mean(), pred.mean().detach()
+
+    with FakeTensorMode(allow_non_fake_inputs=True):
+        z = torch.empty(1, 8, 4, 4, requires_grad=True)
+        t = torch.empty(1, 3, 16, 16)
+        gm, _ = aot_export_module(J(d).eval(), (z, t), trace_joint=True, output_loss_index=0)
+    pre = _backward_ops(gm)
+    assert pre, "expected backward ops in the real decoder graph"
+    rw.rewrite(gm)
+    left = _backward_ops(gm)
+    assert not left, f"backward ops survived on the real decoder: {left}"
+    print(f"      real Decoder: {dict(pre)} -> {{}}")
+    RESULTS["real_decoder"] = {k: v for k, v in pre.items()}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-k", default="", help="only run tests whose name contains this")
+    ap.add_argument("--json", default=None, help="write machine-readable results here")
+    args = ap.parse_args()
+
+    selected = [t for t in TESTS if args.k in t.__name__]
+    print(f"torch={torch.__version__}  running {len(selected)}/{len(TESTS)} tests\n")
+
+    failed = []
+    for t in selected:
+        print(f"[ RUN  ] {t.__name__}")
+        print(f"         {(t.__doc__ or '').strip()}")
+        try:
+            t()
+            print("[  OK  ]\n")
+        except Exception as exc:
+            failed.append(t.__name__)
+            print(f"[ FAIL ] {type(exc).__name__}: {exc}")
+            traceback.print_exc()
+            print()
+
+    if args.json:
+        Path(args.json).write_text(json.dumps(RESULTS, indent=2), encoding="utf-8")
+
+    if failed:
+        print(f"FAILED {len(failed)}/{len(selected)}: {', '.join(failed)}")
+        return 1
+    print(f"PASSED {len(selected)}/{len(selected)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

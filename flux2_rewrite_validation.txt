@@ -1,0 +1,4 @@
+rewrite_stats= {'conv_bwd': 37, 'gn_bwd': 30, 'softmax_bwd': 1, 'sigmoid_bwd': 29, 'sign': 1, 'detach': 272, 'layout': {'view_copy': 155, 'expand_copy': 10, 'permute': 18}}
+output[0] shape=() max_abs_error=0 mean_abs_error=0
+output[1] shape=() max_abs_error=0 mean_abs_error=0
+output[2] shape=(1, 32, 2, 2) max_abs_error=7.10133463e-09 mean_abs_error=1.64922653e-09

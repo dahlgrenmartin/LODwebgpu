@@ -1,0 +1,38 @@
+torch=2.12.0.dev20260308+cu128  running 6/6 tests
+
+[ RUN  ] test_sym4_matches_pywt
+         Sym4 detail filters reproduce pywt.dwt2(mode='zero') coefficient-exactly.
+      cH: kernel 0, shape=(19, 19), max_err=1.64e-07
+      cV: kernel 1, shape=(19, 19), max_err=1.93e-07
+      cD: kernel 2, shape=(19, 19), max_err=1.91e-07
+[  OK  ]
+
+[ RUN  ] test_structural_rewrite_eliminates_backward
+         Structural probe graph lowers with zero *_backward ops remaining.
+      lowered {'aten::convolution_backward': 37, 'aten::sigmoid_backward': 29, 'aten::native_group_norm_backward': 30, 'aten::_softmax_backward_data': 1} -> {}
+      stats={'conv_bwd': 37, 'gn_bwd': 30, 'softmax_bwd': 1, 'sigmoid_bwd': 29, 'sign': 1, 'detach': 272}
+[  OK  ]
+
+[ RUN  ] test_rewrite_is_numerically_exact
+         Rewritten graph matches the original joint graph to fp32 roundoff.
+      output[0] shape=() max_abs_error=0.000e+00 (tol 0.0e+00)
+      output[1] shape=() max_abs_error=0.000e+00 (tol 0.0e+00)
+      output[2] shape=(1, 32, 2, 2) max_abs_error=7.101e-09 (tol 1.0e-07)
+[  OK  ]
+
+[ RUN  ] test_groupnorm_rank3_lowers
+         Rank-3 GroupNorm (the Diffusers AttnProcessor path) lowers, not just NCHW.
+      rank-3 [1,16,9] GroupNorm backward lowered
+[  OK  ]
+
+[ RUN  ] test_groupnorm_non_affine_lowers
+         affine=False GroupNorm (weight=None) lowers instead of crashing.
+      affine=False GroupNorm backward lowered
+[  OK  ]
+
+[ RUN  ] test_real_diffusers_decoder_lowers
+         The real Diffusers Decoder (the class AutoencoderKLFlux2 uses) fully lowers.
+      real Decoder: {'aten::convolution_backward': 21, 'aten::native_group_norm_backward': 18, 'aten::_softmax_backward_data': 1} -> {}
+[  OK  ]
+
+PASSED 6/6

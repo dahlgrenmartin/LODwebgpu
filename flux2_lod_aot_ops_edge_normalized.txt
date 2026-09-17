@@ -1,0 +1,31 @@
+rewrites {'conv_bwd': 37, 'gn_bwd': 30, 'softmax_bwd': 1, 'sigmoid_bwd': 29, 'sign': 1, 'detach': 272, 'layout': {'view_copy': 155, 'expand_copy': 10, 'permute': 18}}
+nodes= 1136 unique= 28
+  90  <built-in function getitem>
+   1  aten::_softmax
+   2  aten::_to_copy
+   1  aten::abs
+  29  aten::add.Scalar
+  64  aten::add.Tensor
+   1  aten::addmm
+  12  aten::bmm
+   5  aten::clone
+   2  aten::constant_pad_nd
+  74  aten::convolution
+  31  aten::div.Scalar
+  10  aten::expand_copy
+   1  aten::gt.Scalar
+   1  aten::lt.Scalar
+   2  aten::mean
+   1  aten::mm
+  30  aten::mul.Scalar
+ 300  aten::mul.Tensor
+  30  aten::native_group_norm
+  29  aten::neg
+   1  aten::ones_like
+  18  aten::permute
+  29  aten::sigmoid
+  93  aten::sub.Tensor
+  64  aten::sum.dim_IntList
+  60  aten::unsqueeze
+ 155  aten::view_copy
+remaining backward= []
