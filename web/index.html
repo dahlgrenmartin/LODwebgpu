@@ -121,7 +121,11 @@
     <label>Total steps<input id="opt-steps" type="number" min="2" step="1" disabled></label>
   </div>
 
-  <div id="drop">Drop a <strong>1024&times;1024</strong> image here</div>
+  <div id="drop">
+    Drop an image here. ONNX: <strong>256&times;256, 512&times;512, 768&times;768,
+    1024&times;768, 768&times;1024, 768&times;512, 512&times;768</strong>.
+    WGSL: native dimensions divisible by 8.
+  </div>
 
   <div class="panes">
     <div class="pane"><h2>Target (unaltered)</h2><canvas id="before"></canvas></div>
@@ -140,9 +144,11 @@
   <div class="note">
     Refinement uses the reference level-1 Sym4 detail-only L1 objective. The
     optimizer fields above start from the FLUX.2 reference Adam values in the
-    manifest but can be changed for each run. Detection traces level-3 LH/HL
-    residual band-PSNR and classifies from the final slope window. The right pane
-    is rendered straight from the decoder's GPU output buffer — no image readback.
+    manifest but can be changed for each run. ONNX Runtime selects one static
+    width&times;height graph after the image is decoded; images are never resized or
+    cropped to fit. Detection traces level-3 LH/HL residual band-PSNR and
+    classifies from the final slope window. The right pane is rendered straight
+    from the decoder's GPU output buffer — no image readback.
     <a href="/verify.html" style="color:var(--accent)">Verification harness →</a>
   </div>
 </div>
