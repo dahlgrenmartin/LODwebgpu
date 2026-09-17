@@ -1,7 +1,126 @@
 <!DOCTYPE html>
-<html lang="en">
-  <head><meta charset="utf-8"><title>ONNX parity</title></head>
-  <body style="font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;padding:16px;background:#0f1115;color:#e6e9ef">running&hellip;
-    <script type="module" src="/src/harness.ts"></script>
-  </body>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LOD Latent Optimization</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#161922; --ink:#e6e9ef; --muted:#9aa4b2;
+    --accent:#58a6ff; --ok:#3fb950; --bad:#f85149; --line:#262b36;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  :root:not([data-theme="dark"]) {
+    --bg:#ffffff; --panel:#f6f8fa; --ink:#1f2328; --muted:#636c76;
+    --accent:#0969da; --ok:#1a7f37; --bad:#cf222e; --line:#d0d7de;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; padding:32px 16px; background:var(--bg); color:var(--ink);
+    font:15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; letter-spacing:-0.01em; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:22px; }
+  #status {
+    padding:12px 16px; border-radius:10px; border:1px solid var(--line);
+    background:var(--panel); font-size:13px; margin-bottom:18px;
+  }
+  #status[data-state="error"] { border-color:var(--bad); color:var(--bad); }
+  #status[data-state="done"] { border-color:var(--ok); color:var(--ok); }
+  #status[data-state="running"] { border-color:var(--accent); }
+  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:18px; }
+  button, input[type=file]::file-selector-button {
+    font:inherit; font-size:13px; padding:8px 14px; border-radius:8px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink);
+    cursor:pointer;
+  }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled { opacity:0.5; cursor:not-allowed; }
+  input[type=file] { font-size:13px; color:var(--muted); }
+  #drop {
+    border:1.5px dashed var(--line); border-radius:12px; padding:18px;
+    text-align:center; color:var(--muted); font-size:13px; margin-bottom:20px;
+    transition:border-color .15s, background .15s;
+  }
+  #drop.over { border-color:var(--accent); background:var(--panel); }
+  .panes { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:18px; }
+  .pane { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .pane h2 {
+    font-size:11px; text-transform:uppercase; letter-spacing:0.06em;
+    color:var(--muted); margin:0 0 8px; font-weight:600;
+  }
+  canvas { width:100%; height:auto; display:block; border-radius:8px; background:#000; image-rendering:auto; }
+  .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; }
+  .stat { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .stat .k {
+    font-size:10px; text-transform:uppercase; letter-spacing:0.06em;
+    color:var(--muted); font-weight:600;
+  }
+  .stat .v { font-family:var(--mono); font-size:16px; margin-top:4px; }
+  .note { margin-top:14px; color:var(--muted); font-size:12px; line-height:1.6; }
+  .warn {
+    margin-top:22px; padding:12px 16px; border-radius:10px; font-size:12px;
+    line-height:1.6; border:1px solid var(--bad); color:var(--ink);
+    background:var(--panel);
+  }
+  .warn strong { color:var(--bad); }
+  .warn code { font-family:var(--mono); font-size:11px; }
+  @media (max-width:640px) {
+    body { padding:20px 16px; }
+    .panes { grid-template-columns:1fr; }
+    .stats { grid-template-columns:repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>LOD latent optimization</h1>
+  <div class="sub">
+    A frozen FLUX.2-small decoder, optimized through its own backward pass — in the
+    browser, on WebGPU. The gradient is computed by a graph whose backward ops were
+    rewritten into forward-only operators.
+  </div>
+
+  <div id="status" data-state="boot">Starting…</div>
+
+  <div class="controls">
+    <input id="file" type="file" accept="image/*" disabled>
+    <button id="sample" disabled>Use sample image</button>
+  </div>
+
+  <div id="drop">Drop an image here</div>
+
+  <div class="panes">
+    <div class="pane"><h2>Target (your image)</h2><canvas id="before"></canvas></div>
+    <div class="pane"><h2>Decoded from latent</h2><canvas id="after"></canvas></div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="k">Step</div><div class="v" id="step">—</div></div>
+    <div class="stat"><div class="k">Loss</div><div class="v" id="loss">—</div></div>
+    <div class="stat"><div class="k">Detector</div><div class="v" id="score">—</div></div>
+    <div class="stat"><div class="k">Per step</div><div class="v" id="rate">—</div></div>
+  </div>
+
+  <div class="warn">
+    <strong>The decoder has random weights.</strong> This build uses the structural
+    reconstruction of FLUX.2-small, not the trained checkpoint, so the decoded pane
+    will be noise no matter how well the optimization runs. Everything around it is
+    real — the encoder, the rewritten backward pass, the gradient, and Adam are all
+    verified against PyTorch — but a recognizable image needs
+    <code>black-forest-labs/FLUX.2-small-decoder</code> exported in place of the
+    random-weight model.
+  </div>
+
+  <div class="note">
+    The right pane is rendered straight from the decoder's GPU output buffer — no
+    readback. The Adam hyperparameters shipped here are placeholders, not the
+    reference LOD values, so treat the loss curve as evidence the loop runs, not as
+    a statement about LOD's behaviour.
+    <a href="/verify.html" style="color:var(--accent)">Verification harness →</a>
+  </div>
+</div>
+<script type="module" src="/src/app.ts"></script>
+</body>
 </html>

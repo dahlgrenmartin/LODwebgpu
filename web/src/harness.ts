@@ -1,6 +1,6 @@
 import * as ort from 'onnxruntime-web/webgpu';
 import { loadManifest } from './manifest';
-import { createDevice, createSession } from './session';
+import { createSession } from './session';
 
 const BASE = '/models';
 // Relative, to match the Python suite, and sized to include the accepted fp16
@@ -50,8 +50,8 @@ async function main() {
     const manifest = await loadManifest(`${BASE}/manifest.json`);
     const image = manifest.resolutions[0].image;
     const golden = await loadGolden(image);
-    const device = await createDevice();
-    const runner = await createSession(manifest, image, BASE, device);
+    const runner = await createSession(manifest, image, BASE);
+    const device = runner.device;
 
     const z = golden('z');
     const target = golden('target');

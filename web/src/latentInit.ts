@@ -18,7 +18,6 @@ export async function initLatent(
   scaling: Scaling,
   externalData?: { path: string; data: string }[],
 ): Promise<{ buffer: GPUBuffer; numel: number; shape: number[] }> {
-  ort.env.webgpu.device = device;
   const session = await ort.InferenceSession.create(encoderUrl, {
     executionProviders: ['webgpu'],
     ...(externalData ? { externalData } : {}),
