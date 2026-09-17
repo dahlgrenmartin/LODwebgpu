@@ -9,8 +9,10 @@
       const { createMaxDevice } = await import('/src/wgsl/runtime.ts');
       const device = await createMaxDevice();
       const man = await fetch('/models/manifest.json').then(r => r.json());
+      const first = man.resolutions[0];
+      if (first.width !== first.height) throw new Error('first verification resolution must be square');
       const trace = new URLSearchParams(location.search).has('trace');
-      const r = await runGraphTest(device, '/models', man.resolutions[0].image, trace);
+      const r = await runGraphTest(device, '/models', first.width, trace);
       window.__RESULTS__ = r;
       document.body.textContent = `${r.status}  (${r.ms} ms)\n\n` + r.results.map(x =>
         `${x.pass ? 'PASS' : 'FAIL'}  ${x.name.padEnd(8)} ${x.shape.padEnd(16)} rms=${x.relErr.toExponential(2)} max=${x.maxRel.toExponential(2)}`
