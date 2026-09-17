@@ -1,5 +1,5 @@
 rewrites {'conv_bwd': 37, 'gn_bwd': 30, 'softmax_bwd': 1, 'sigmoid_bwd': 29, 'sign': 1, 'detach': 273, 'layout': {'view_copy': 158, 'expand_copy': 10, 'permute': 18}}
-nodes= 1159 unique= 31
+nodes= 1158 unique= 30
   90  <built-in function getitem>
    1  aten::_softmax
    2  aten::_to_copy
@@ -24,7 +24,6 @@ nodes= 1159 unique= 31
   29  aten::neg
    1  aten::ones_like
   18  aten::permute
-   1  aten::repeat
    5  aten::select.int
   29  aten::sigmoid
   93  aten::sub.Tensor

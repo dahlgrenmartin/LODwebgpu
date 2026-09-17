@@ -195,15 +195,21 @@ class Sym4Level3Detector(nn.Module):
             torch.outer(SYM4_LO, SYM4_HI),   # cV
             torch.outer(SYM4_HI, SYM4_HI),   # cD
         ], dim=0)[:, None, :, :]
-        self.register_buffer("bank", bank.flip(-1, -2).contiguous())
+        bank = bank.flip(-1, -2).contiguous()
+        self.register_buffer("bank", bank)
+        # Pre-repeated grouped-conv weight.  Doing this here rather than in
+        # forward keeps aten::repeat out of the exported graph.
+        self.register_buffer("bank_rep", bank.repeat(channels, 1, 1, 1).contiguous())
         self.channels = channels
 
     def bands(self, x, bank=None):
         """Return the three level-3 detail bands, each [N, C, h, w]."""
-        b = self.bank if bank is None else bank
         n, c = x.shape[0], x.shape[1]
         # [4C,1,8,8]: group g -> input channel g, output channels 4g+{A,H,V,D}
-        w = b.repeat(c, 1, 1, 1)
+        if bank is None and c == self.channels:
+            w = self.bank_rep
+        else:
+            w = (self.bank if bank is None else bank).repeat(c, 1, 1, 1)
         out5 = None
         for _ in range(3):
             # Asymmetric (6,7): left pad 6 aligns the subsample phase with pywt,
