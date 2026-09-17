@@ -14,6 +14,10 @@
 
 - **Python is run through conda:** every command is `CONDA_NO_PLUGINS=true conda run -n pytorch-5090 --no-capture-output python ...`. `conda run` **asserts on multi-line `-c` arguments**, so any multi-line snippet must go in a script file first. The base interpreter has torch 2.6 and will produce different `detach` counts.
 - **ONNX opset 18** — required for `GroupNormalization`.
+- **ONNX export requires the dynamo path**, hence `onnxscript` (>=0.7.2). The legacy
+  TorchScript exporter has no symbolic for `aten::native_group_norm`. The dynamo
+  exporter emits IR version 10, so **onnxruntime must be >=1.30** (1.17 caps at IR 9).
+  Both were installed during execution on 2026-09-17.
 - **Compute is fp32 end to end.** fp16 appears only as initializer *storage*. No half-precision arithmetic anywhere.
 - **Shape-static.** One joint graph per resolution: 256×256 (latent `[1,32,32,32]`, 32768 elements) and 128×128 (latent `[1,32,16,16]`, 8192 elements). The encoder is exported separately with dynamic shapes.
 - **No WASM EP fallback.** If WebGPU is unavailable the runtime fails loudly.
