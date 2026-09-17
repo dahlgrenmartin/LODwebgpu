@@ -187,10 +187,11 @@ class Sym4Level1Loss(nn.Module):
         # samples of the full convolution, matching pywt's subsample phase.
         x = zero_pad2d(residual, 6, 6, 6, 6)
         d = F.conv2d(x, self.kernels, stride=2, groups=3)
-        # sum/numel rather than mean(): mean's backward broadcasts the scalar
-        # gradient with a materialised expand whose target shape is baked at
-        # trace time, which breaks dynamic-shape capture.
-        return d.abs().sum() / d.numel()
+        # The reference sums the three per-band means. Since this tensor packs
+        # three detail bands for every RGB channel, that is 3x the all-element
+        # mean. Keep sum/numel rather than mean() so dynamic-shape capture does
+        # not materialize a trace-time expand in the backward graph.
+        return 3.0 * d.abs().sum() / d.numel()
 
 
 class Sym4Level3Detector(nn.Module):
