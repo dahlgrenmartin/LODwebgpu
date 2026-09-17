@@ -3,7 +3,7 @@ export interface AdamConfig {
 }
 
 export interface Resolution {
-  image: number; latent: number[]; numel: number; graph: string;
+  width: number; height: number; latent: number[]; numel: number; graph: string;
 }
 
 export interface Manifest {
@@ -14,12 +14,22 @@ export interface Manifest {
 
 const ADAM_KEYS: (keyof AdamConfig)[] = ['lr', 'beta1', 'beta2', 'eps', 'steps'];
 
+export function findResolution(
+  manifest: Pick<Manifest, 'resolutions'>, width: number, height: number,
+): Resolution | undefined {
+  return manifest.resolutions.find((r) => r.width === width && r.height === height);
+}
+
+export function formatSupportedSizes(resolutions: readonly Resolution[]): string {
+  return resolutions.map((r) => `${r.width}x${r.height}`).join(', ');
+}
+
 /**
  * Load and validate the manifest.
  *
  * The Adam hyperparameters have no defaults on purpose: they must match the
- * reference LOD implementation, and a silently-defaulted value would produce a
- * plausible-looking run that is not comparable to anything.
+ * reference LOD implementation unless the user explicitly overrides them in the
+ * browser controls.
  */
 export async function loadManifest(url: string): Promise<Manifest> {
   const res = await fetch(url);
@@ -32,5 +42,14 @@ export async function loadManifest(url: string): Promise<Manifest> {
     }
   }
   if (!m.resolutions?.length) throw new Error('manifest.resolutions empty');
+  for (const r of m.resolutions) {
+    if (!Number.isInteger(r.width) || r.width <= 0 ||
+        !Number.isInteger(r.height) || r.height <= 0) {
+      throw new Error('manifest resolution width/height must be positive integers');
+    }
+    if (!Array.isArray(r.latent) || r.latent.length !== 4 || typeof r.graph !== 'string') {
+      throw new Error(`invalid manifest resolution ${r.width}x${r.height}`);
+    }
+  }
   return m;
 }
