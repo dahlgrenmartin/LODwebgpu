@@ -5,6 +5,7 @@ import { Display } from './display';
 import { Adam } from './adam';
 import { createBackend, type Backend, type BackendName } from './backends';
 import { bandPsnr, linearSlope } from './detectorMath';
+import { parseOptimizerConfig } from './optimizerConfig';
 
 const BASE = '/models';
 const DETECTOR_WINDOW = 10;
@@ -24,7 +25,16 @@ const els = {
   rate: document.getElementById('rate') as HTMLElement,
   crop: document.getElementById('crop') as HTMLElement,
   backend: document.getElementById('backend') as HTMLSelectElement,
+  optLr: document.getElementById('opt-lr') as HTMLInputElement,
+  optBeta1: document.getElementById('opt-beta1') as HTMLInputElement,
+  optBeta2: document.getElementById('opt-beta2') as HTMLInputElement,
+  optEps: document.getElementById('opt-eps') as HTMLInputElement,
+  optSteps: document.getElementById('opt-steps') as HTMLInputElement,
 };
+
+const optimizerInputs = [
+  els.optLr, els.optBeta1, els.optBeta2, els.optEps, els.optSteps,
+];
 
 let manifest: Manifest;
 let backend: Backend | null = null;
@@ -41,6 +51,25 @@ function setControlsEnabled(enabled: boolean): void {
   els.file.disabled = !enabled;
   els.sample.disabled = !enabled;
   els.backend.disabled = !enabled;
+  for (const input of optimizerInputs) input.disabled = !enabled;
+}
+
+function populateOptimizerControls(): void {
+  els.optLr.value = String(manifest.adam.lr);
+  els.optBeta1.value = String(manifest.adam.beta1);
+  els.optBeta2.value = String(manifest.adam.beta2);
+  els.optEps.value = String(manifest.adam.eps);
+  els.optSteps.value = String(manifest.adam.steps);
+}
+
+function readOptimizerConfig() {
+  return parseOptimizerConfig({
+    lr: els.optLr.value,
+    beta1: els.optBeta1.value,
+    beta2: els.optBeta2.value,
+    eps: els.optEps.value,
+    steps: els.optSteps.value,
+  });
 }
 
 function describeBackend(b: Backend): string {
@@ -80,10 +109,11 @@ async function boot(): Promise<void> {
     throw new Error(
       'This demo needs WebGPU. Chrome or Edge 113+ on desktop supports it; ' +
       'Safari 18+ and Firefox need it enabled. There is deliberately no CPU ' +
-      'fallback — 30 optimization steps through a 28M-parameter decoder would ' +
+      'fallback — latent refinement through a 28M-parameter decoder would ' +
       'take minutes rather than seconds.');
   }
   manifest = await loadManifest(`${BASE}/manifest.json`);
+  populateOptimizerControls();
   els.backend.addEventListener('change', () => {
     void useBackend(els.backend.value as BackendName).catch((e) => {
       setState('error', (e as Error).message);
@@ -94,6 +124,15 @@ async function boot(): Promise<void> {
 
 async function run(source: Blob): Promise<void> {
   if (busy || !backend) return;
+
+  let optimizer;
+  try {
+    optimizer = readOptimizerConfig();
+  } catch (e) {
+    setState('error', `Optimizer: ${(e as Error).message}`);
+    return;
+  }
+
   busy = true;
   setControlsEnabled(false);
   try {
@@ -126,8 +165,8 @@ async function run(source: Blob): Promise<void> {
 
     display = await new Display(backend.device, els.after, w, h).init();
 
-    const adam = await new Adam(backend.device, latent.data.length, manifest.adam).init();
-    const steps = manifest.adam.steps;
+    const adam = await new Adam(backend.device, latent.data.length, optimizer).init();
+    const steps = optimizer.steps;
 
     let last = performance.now();
     let rising = 0;
