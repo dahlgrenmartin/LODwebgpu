@@ -245,6 +245,34 @@ def test_real_diffusers_decoder_lowers():
     RESULTS["real_decoder"] = {k: v for k, v in pre.items()}
 
 
+@test
+def test_level3_detector_matches_pywt():
+    """Level-3 Sym4 trace reproduces pywt.wavedec2(level=3) detail bands."""
+    try:
+        import pywt
+        import numpy as np
+    except ImportError:
+        print("      SKIP (pywt not installed)")
+        return
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    x = rng.standard_normal((1, 1, 64, 64))
+    det = probe.Sym4Level3Detector(channels=1)
+    bands = det.bands(torch.tensor(x, dtype=torch.float64),
+                      bank=det.bank.to(torch.float64))
+
+    coeffs = pywt.wavedec2(x[0, 0], "sym4", mode="zero", level=3)
+    cH3, cV3, cD3 = coeffs[1]
+    for name, ref, got in (("cH3", cH3, bands[0]), ("cV3", cV3, bands[1]),
+                           ("cD3", cD3, bands[2])):
+        g = got[0, 0].numpy()
+        assert g.shape == ref.shape, f"{name}: shape {g.shape} != {ref.shape}"
+        err = np.abs(g - ref).max()
+        assert err < 1e-6, f"{name}: max_err {err:.3e}"
+        print(f"      {name}: shape={ref.shape} max_err={err:.2e}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only run tests whose name contains this")

@@ -174,6 +174,54 @@ class Sym4Level1Loss(nn.Module):
         return d.abs().mean()
 
 
+class Sym4Level3Detector(nn.Module):
+    """Forward-only level-3 Sym4 detail trace.
+
+    Three successive level-1 transforms, each applied to the previous
+    approximation band, matching pywt.wavedec2(..., level=3).  The output is a
+    scalar score; it is detached at the JointLOD boundary and never enters the
+    backward graph.
+
+    Band extraction uses view + select rather than arange/index_select on
+    purpose: it keeps the operator inventory inside the vocabulary the rewrite
+    already targets instead of introducing aten::arange and aten::index_select.
+    """
+
+    def __init__(self, channels: int = 3):
+        super().__init__()
+        bank = torch.stack([
+            torch.outer(SYM4_LO, SYM4_LO),   # cA
+            torch.outer(SYM4_HI, SYM4_LO),   # cH
+            torch.outer(SYM4_LO, SYM4_HI),   # cV
+            torch.outer(SYM4_HI, SYM4_HI),   # cD
+        ], dim=0)[:, None, :, :]
+        self.register_buffer("bank", bank.flip(-1, -2).contiguous())
+        self.channels = channels
+
+    def bands(self, x, bank=None):
+        """Return the three level-3 detail bands, each [N, C, h, w]."""
+        b = self.bank if bank is None else bank
+        n, c = x.shape[0], x.shape[1]
+        # [4C,1,8,8]: group g -> input channel g, output channels 4g+{A,H,V,D}
+        w = b.repeat(c, 1, 1, 1)
+        out5 = None
+        for _ in range(3):
+            # Asymmetric (6,7): left pad 6 aligns the subsample phase with pywt,
+            # right pad 7 gives floor((N+k-1)/2) coefficients for ODD N too.
+            # Levels 2 and 3 receive odd lengths, where a symmetric pad is short
+            # by one; for even N the two are identical, which is why the level-1
+            # loss can keep (6,6,6,6).
+            padded = F.pad(x, (6, 7, 6, 7), mode="constant", value=0.0)
+            out = F.conv2d(padded, w, stride=2, groups=c)
+            out5 = out.view(n, c, 4, out.shape[-2], out.shape[-1])
+            x = out5[:, :, 0]                      # cA feeds the next level
+        return [out5[:, :, k] for k in (1, 2, 3)]
+
+    def forward(self, x):
+        h, v, d = self.bands(x)
+        return (h.abs().mean() + v.abs().mean() + d.abs().mean()) / 3.0
+
+
 class JointLOD(nn.Module):
     def __init__(self, loss_kind: str):
         super().__init__()
