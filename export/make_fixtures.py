@@ -7,6 +7,7 @@ lives here rather than inline.
     python export/make_fixtures.py m0
     python export/make_fixtures.py adam
     python export/make_fixtures.py encoder
+    python export/make_fixtures.py real
     python export/make_fixtures.py all
 """
 from __future__ import annotations
@@ -26,8 +27,20 @@ OUT = ROOT / "web" / "public" / "models"
 # and 30 refinement steps.
 REFERENCE_ADAM = {"lr": 0.03, "beta1": 0.9, "beta2": 0.999, "eps": 1e-8, "steps": 30}
 SEED = 5
-RES = 16   # latent 16 -> 128x128 image
+DYNAMIC_RES = 16   # symbolic-capture example only; not an ORT supported size
+REFERENCE_RES = 32 # 256x256 verification fixture
 MODEL_ID = "black-forest-labs/FLUX.2-small-decoder"
+
+# Exact ORT-Web image shapes, expressed as (width, height).
+ORT_SIZES = [
+    (256, 256),
+    (512, 512),
+    (768, 768),
+    (1024, 768),
+    (768, 1024),
+    (768, 512),
+    (512, 768),
+]
 
 
 def _export_wgsl_graph(*, real: bool) -> None:
@@ -35,28 +48,35 @@ def _export_wgsl_graph(*, real: bool) -> None:
     from export.to_onnx import build_graph_dynamic
 
     gm, wrapper, _, _ = build_graph_dynamic(
-        res=RES, seed=SEED, real=real, model_id=MODEL_ID)
+        res=DYNAMIC_RES, seed=SEED, real=real, model_id=MODEL_ID)
     export_graph(gm, wrapper, OUT)
 
 
 def stage_m0() -> None:
-    from export.to_onnx import export_joint, write_manifest, clear_outputs
+    """Small structural fixture; kept square to make local smoke tests cheap."""
+    from export.ort_shapes import graph_filename, write_manifest
+    from export.to_onnx import export_joint, clear_outputs
     from export.reference import dump_reference
+
     OUT.mkdir(parents=True, exist_ok=True)
     clear_outputs(OUT)
-    export_joint(res=RES, out_dir=OUT, fp16=True, external_data=True, seed=SEED)
-    dump_reference(res=RES, out_dir=OUT, seed=SEED)
+    old = export_joint(
+        res=DYNAMIC_RES, out_dir=OUT, fp16=True, external_data=True, seed=SEED)
+    image = DYNAMIC_RES * 8
+    old.rename(OUT / graph_filename(image, image))
+    dump_reference(res=DYNAMIC_RES, out_dir=OUT, seed=SEED)
     _export_wgsl_graph(real=False)
-    write_manifest(OUT, [RES], REFERENCE_ADAM)
+    write_manifest(OUT, [(image, image)], REFERENCE_ADAM)
     print(f"m0 fixtures -> {OUT}")
 
 
 def stage_adam() -> None:
     import numpy as np
     from export.adam_reference import adam_steps
+
     OUT.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(17)
-    n = 32 * RES * RES
+    n = 32 * DYNAMIC_RES * DYNAMIC_RES
     steps = REFERENCE_ADAM["steps"]
     z0 = rng.standard_normal(n).astype(np.float32)
     grads = [rng.standard_normal(n).astype(np.float32) for _ in range(steps)]
@@ -71,16 +91,31 @@ def stage_adam() -> None:
 
 def stage_real() -> None:
     """Everything the demo needs, built from the trained FLUX.2-small checkpoint."""
-    from export.to_onnx import (export_joint_real, export_encoder, write_manifest,
-                                clear_outputs)
+    from export.ort_shapes import export_joint_real_shape, write_manifest
+    from export.to_onnx import export_encoder, clear_outputs, load_real_vae
     from export.reference import dump_reference_real
+
     OUT.mkdir(parents=True, exist_ok=True)
     clear_outputs(OUT)
-    export_joint_real(res=RES, out_dir=OUT, fp16=True, external_data=True, seed=SEED)
-    dump_reference_real(res=RES, out_dir=OUT, seed=SEED)
+
+    # Load the checkpoint once for all seven static captures. Each exported graph
+    # still gets its own shape-specialized activation plan, while model weights
+    # are sourced from the same in-memory module during generation.
+    vae = load_real_vae(MODEL_ID)
+    for width, height in ORT_SIZES:
+        export_joint_real_shape(
+            width, height, OUT,
+            fp16=True, external_data=True, seed=SEED,
+            model_id=MODEL_ID, vae=vae,
+        )
+        print(f"ORT graph -> {width}x{height}")
+
+    # The verification harness only needs one golden trajectory; use the first
+    # supported square size so it can run against the first manifest entry.
+    dump_reference_real(res=REFERENCE_RES, out_dir=OUT, seed=SEED)
     export_encoder(OUT, model_id=MODEL_ID, fp16=True, external_data=True)
     _export_wgsl_graph(real=True)
-    write_manifest(OUT, [RES], REFERENCE_ADAM)
+    write_manifest(OUT, ORT_SIZES, REFERENCE_ADAM)
     print(f"real-checkpoint fixtures -> {OUT}")
 
 
