@@ -149,8 +149,7 @@ async function run(source: Blob): Promise<void> {
       previousLoss = out.loss;
       if (rising >= 3) {
         setState('error',
-          `Loss rose for 3 consecutive steps (step ${step + 1}). Stopped — the ` +
-          `Adam hyperparameters in manifest.json are placeholders.`);
+          `Loss rose for 3 consecutive steps (step ${step + 1}). Stopped.`);
         return;
       }
 
