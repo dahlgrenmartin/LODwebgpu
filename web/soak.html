@@ -63,6 +63,22 @@
           ...rows2.slice(0, 14).map(r => `  ${String(r.ms).padStart(8)} ms  n=${String(r.n).padStart(4)}  ${r.op}`)]
           .join(String.fromCharCode(10)));
       }
+      if (q.has('conv')) {
+        rt.convLog = [];
+        await interp.run(z, target);
+        const agg = new Map();
+        for (const c of rt.convLog) {
+          const key = `${c.fast ? 'FAST' : 'gen '} ${c.k} Cin=${c.Cin} Cout=${c.Cout} ${c.Hin}x${c.Win}`;
+          const cost = c.Cin * c.Cout * c.Hin * c.Win;
+          const prev = agg.get(key) ?? { n: 0, cost: 0 };
+          agg.set(key, { n: prev.n + 1, cost: prev.cost + cost });
+        }
+        rt.convLog = null;
+        const rows3 = [...agg].map(([k, v]) => ({ k, n: v.n, gmac: +(v.cost * 9 / 1e9).toFixed(2) }))
+          .sort((a, b) => b.gmac - a.gmac);
+        window.__CONV__ = rows3;
+        say(rows3.slice(0, 16).map(r => `${String(r.gmac).padStart(8)} GMAC n=${String(r.n).padStart(3)}  ${r.k}`).join(String.fromCharCode(10)));
+      }
       const rows = [];
       for (let i = 0; i < steps; i++) {
         const t0 = performance.now();

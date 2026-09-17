@@ -114,6 +114,10 @@ export class Runtime {
   allocCount = 0;
   allocBytes = 0;
 
+  /** When set, every convolution records its configuration (debug only). */
+  convLog: { fast: boolean; N: number; Cin: number; Cout: number;
+             Hin: number; Win: number; k: string }[] | null = null;
+
   alloc(count: number, label?: string): GPUBuffer {
     const size = Math.max(4, count * 4);
     this.allocCount++;
@@ -385,6 +389,11 @@ export class Runtime {
       && Hout === Hin && Wout === Win
       && (!p.transposed || (p.outputPadding?.every((v) => v === 0) ?? true))
       && Cout % 4 === 0;     // conv3x3 blocks 4 output channels per workgroup
+    if (this.convLog) {
+      this.convLog.push({ fast: fastPath, N, Cin, Cout, Hin, Win,
+        k: `${p.stride}|${p.padding}|g${p.groups}|${p.transposed ? 'T' : 'F'}` +
+           `|${KH}x${KW}` });
+    }
     if (fastPath) {
       const TILE = 16;
       this.runGrid('conv3x3', [
