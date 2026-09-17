@@ -5,10 +5,23 @@ import json
 import tempfile
 from pathlib import Path
 
+from export.make_fixtures import ORT_SIZES
 from export.ort_shapes import graph_filename, write_manifest
 
 
 ADAM = {"lr": 0.03, "beta1": 0.9, "beta2": 0.999, "eps": 1e-8, "steps": 30}
+
+
+def test_requested_ort_sizes_are_exact():
+    assert ORT_SIZES == [
+        (256, 256),
+        (512, 512),
+        (768, 768),
+        (1024, 768),
+        (768, 1024),
+        (768, 512),
+        (512, 768),
+    ]
 
 
 def test_graph_filename_uses_width_height():
@@ -50,6 +63,7 @@ def test_manifest_rejects_non_multiple_of_eight():
 
 
 if __name__ == "__main__":
+    test_requested_ort_sizes_are_exact()
     test_graph_filename_uses_width_height()
     test_manifest_records_rectangular_shapes()
     test_manifest_rejects_non_multiple_of_eight()
