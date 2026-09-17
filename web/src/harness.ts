@@ -121,6 +121,55 @@ async function main() {
       });
     }
 
+    // --- encoder-seeded latent init ---
+    {
+      const { initLatent } = await import('./latentInit');
+      const img = new Float32Array(1 * 3 * image * image).fill(0.25);
+      const { buffer, numel, shape } = await initLatent(
+        device, `${BASE}/encoder.onnx`, img, [1, 3, image, image],
+        { factor: 1.0, shift: 0.0 },
+        [{ path: 'encoder.onnx.data', data: `${BASE}/encoder.onnx.data` }]);
+      const expected = 32 * (image / 8) * (image / 8);
+      cases.push({
+        name: `latent init shape ${JSON.stringify(shape)}`,
+        maxAbs: Math.abs(numel - expected), pass: numel === expected,
+      });
+
+      const read = device.createBuffer({
+        size: numel * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(buffer, 0, read, 0, numel * 4);
+      device.queue.submit([enc.finish()]);
+      await read.mapAsync(GPUMapMode.READ);
+      const z0 = new Float32Array(read.getMappedRange().slice(0));
+      read.unmap();
+      const finite = z0.every((x) => Number.isFinite(x));
+      const nonzero = z0.some((x) => x !== 0);
+      cases.push({
+        name: 'latent init finite and non-degenerate',
+        maxAbs: finite && nonzero ? 0 : NaN, pass: finite && nonzero,
+      });
+    }
+
+    // --- 30-step headless optimization ---
+    {
+      const { runLoop } = await import('./loop');
+      const { losses, scores, msPerStep } = await runLoop(
+        runner, manifest.adam, golden('z').data, golden('target').data,
+        golden('z').shape, golden('target').shape, device);
+      const finite = losses.every((l) => Number.isFinite(l));
+      const improved = losses[losses.length - 1] < losses[0];
+      const right = losses.length === manifest.adam.steps;
+      cases.push({
+        name: `loop ${losses.length} steps, loss ${losses[0].toFixed(5)} -> ` +
+              `${losses[losses.length - 1].toFixed(5)}, ${msPerStep.toFixed(0)} ms/step`,
+        maxAbs: losses[0] - losses[losses.length - 1],
+        pass: finite && improved && right,
+      });
+      (window as any).__LOOP__ = { losses, scores, msPerStep };
+    }
+
     await runner.dispose();
   } catch (e) {
     cases.push({
