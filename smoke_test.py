@@ -490,6 +490,34 @@ def test_encoder_export_dynamic_shapes():
             print(f"      {size}x{size} -> {out.shape}")
 
 
+@test
+def test_adam_reference_matches_torch():
+    """numpy Adam reproduces torch.optim.Adam over a fixed gradient sequence."""
+    import numpy as np
+    sys.path.insert(0, str(ROOT))
+    from export.adam_reference import adam_steps
+
+    rng = np.random.default_rng(17)
+    z0 = rng.standard_normal(64).astype(np.float32)
+    grads = [rng.standard_normal(64).astype(np.float32) for _ in range(30)]
+    cfg = dict(lr=0.05, beta1=0.9, beta2=0.999, eps=1e-8)
+
+    got = adam_steps(z0.copy(), grads, **cfg)
+
+    zt = torch.tensor(z0.copy(), requires_grad=True)
+    opt = torch.optim.Adam([zt], lr=cfg["lr"],
+                           betas=(cfg["beta1"], cfg["beta2"]), eps=cfg["eps"])
+    for g in grads:
+        opt.zero_grad()
+        zt.grad = torch.tensor(g)
+        opt.step()
+    want = zt.detach().numpy()
+
+    err = float(np.abs(got - want).max())
+    assert err < 1e-6, f"adam mismatch: {err:.3e}"
+    print(f"      30 steps, max_abs_error={err:.2e}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only run tests whose name contains this")
