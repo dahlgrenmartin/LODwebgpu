@@ -4,8 +4,10 @@ import { prepareImage, sampleImage, type PreparedImage } from './imageInput';
 import { Display } from './display';
 import { Adam } from './adam';
 import { createBackend, type Backend, type BackendName } from './backends';
+import { bandPsnr, linearSlope } from './detectorMath';
 
 const BASE = '/models';
+const DETECTOR_WINDOW = 10;
 
 type State = 'boot' | 'loading' | 'ready' | 'encoding' | 'running' | 'done' | 'error';
 
@@ -45,6 +47,11 @@ function describeBackend(b: Backend): string {
   return b.fixedSize
     ? `ONNX Runtime Web — fixed ${b.fixedSize}x${b.fixedSize}`
     : 'WGSL interpreter — any size divisible by 8';
+}
+
+function formatSlope(s: number): string {
+  if (!Number.isFinite(s)) return '—';
+  return `${s >= 0 ? '+' : ''}${s.toFixed(4)}`;
 }
 
 async function useBackend(name: BackendName): Promise<void> {
@@ -125,6 +132,8 @@ async function run(source: Blob): Promise<void> {
     let last = performance.now();
     let rising = 0;
     let previousLoss = Infinity;
+    const bandPsnrHistory: number[] = [];
+    let detectorSlope = Number.NaN;
 
     for (let step = 0; step < steps; step++) {
       // One step per frame keeps the page responsive and self-paces to the GPU.
@@ -145,10 +154,17 @@ async function run(source: Blob): Promise<void> {
         return;
       }
 
+      // The graph returns the reference L3 off-diagonal residual energy.
+      // Convert it to band-PSNR on the CPU, then fit the same OLS slope over the
+      // latest 10 iterations as dahlgrenmartin/LOD/src/LOD.py.
+      const psnr = bandPsnr(out.score);
+      bandPsnrHistory.push(psnr);
+      detectorSlope = linearSlope(bandPsnrHistory, DETECTOR_WINDOW);
+
       const now = performance.now();
       els.step.textContent = `${step + 1} / ${steps}`;
       els.loss.textContent = out.loss.toFixed(5);
-      els.score.textContent = out.score.toFixed(5);
+      els.score.textContent = `${psnr.toFixed(3)} dB · slope ${formatSlope(detectorSlope)}`;
       els.rate.textContent = `${Math.round(now - last)} ms`;
       last = now;
       setState('running', `Optimizing… step ${step + 1} of ${steps}`);
@@ -156,7 +172,13 @@ async function run(source: Blob): Promise<void> {
       adam.step(z.buffer, out.grad);
     }
 
-    setState('done', `Done — ${steps} steps on the ${backend.name} backend.`);
+    const verdict = detectorSlope > 0 ? 'SYNTHETIC' : 'REAL';
+    (window as any).__DETECTOR__ = {
+      bandPsnr: bandPsnrHistory.slice(), slope: detectorSlope, verdict,
+    };
+    setState('done',
+      `Done — ${verdict} · slope ${formatSlope(detectorSlope)} over the last ` +
+      `${Math.min(DETECTOR_WINDOW, bandPsnrHistory.length)} steps · ${backend.name} backend.`);
   } catch (e) {
     setState('error', `${(e as Error).message}`);
     throw e;
