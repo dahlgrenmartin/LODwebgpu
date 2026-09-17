@@ -141,7 +141,9 @@ def test_rewrite_is_numerically_exact():
         ref, got = gm(*args), gm2(*args)
     assert len(ref) == len(got), f"output count changed: {len(ref)} -> {len(got)}"
 
-    tol = [0.0, 0.0, 1e-7]
+    # loss, pred, score are forward values (bit-identical); grad_z is the
+    # rewritten backward, allowed fp32 roundoff.
+    tol = [0.0, 0.0, 0.0, 1e-7]
     errs = []
     for i, (a, b) in enumerate(zip(ref, got)):
         assert isinstance(a, torch.Tensor) == isinstance(b, torch.Tensor), f"output[{i}] type changed"
@@ -271,6 +273,26 @@ def test_level3_detector_matches_pywt():
         err = np.abs(g - ref).max()
         assert err < 1e-6, f"{name}: max_err {err:.3e}"
         print(f"      {name}: shape={ref.shape} max_err={err:.2e}")
+
+
+@test
+def test_joint_outputs_image_and_score():
+    """Joint graph exposes loss, pred image, detector score, and grad_z."""
+    m = probe.JointLOD("sym4").eval()
+    with FakeTensorMode(allow_non_fake_inputs=True):
+        z = torch.empty(1, 32, 8, 8, requires_grad=True)
+        t = torch.empty(1, 3, 64, 64)
+        gm, _ = aot_export_module(m, (z, t), trace_joint=True, output_loss_index=0)
+    out_node = [n for n in gm.graph.nodes if n.op == "output"][0]
+    flat = list(out_node.args[0])
+    assert len(flat) == 4, f"expected 4 graph outputs, got {len(flat)}"
+    shapes = [tuple(n.meta["val"].shape) for n in flat]
+    assert shapes[1] == (1, 3, 64, 64), f"pred shape {shapes[1]}"
+    assert shapes[0] == () and shapes[2] == (), f"loss/score not scalar: {shapes}"
+    assert shapes[3] == (1, 32, 8, 8), f"grad_z shape {shapes[3]}"
+    rw.rewrite(gm)
+    assert not _backward_ops(gm), f"backward survived: {_backward_ops(gm)}"
+    print(f"      outputs: loss{shapes[0]} pred{shapes[1]} score{shapes[2]} grad_z{shapes[3]}")
 
 
 def main():

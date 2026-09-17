@@ -228,6 +228,7 @@ class JointLOD(nn.Module):
         self.decoder = Flux2SmallDecoder()
         self.loss_kind = loss_kind
         self.sym4 = Sym4Level1Loss()
+        self.detector = Sym4Level3Detector(channels=3)
         for p in self.decoder.parameters():
             p.requires_grad_(False)
 
@@ -240,8 +241,10 @@ class JointLOD(nn.Module):
             loss = residual.abs().mean()
         else:
             loss = residual.square().mean()
-        # Non-loss outputs must be detached for trace_joint=True.
-        return loss, pred.mean().detach()
+        # Non-loss outputs must be detached for trace_joint=True.  The detector
+        # trace is forward-only and never enters the backward graph.
+        score = self.detector(pred)
+        return loss, pred.detach(), score.detach()
 
 
 def opname(node):

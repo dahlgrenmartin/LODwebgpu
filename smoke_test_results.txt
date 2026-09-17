@@ -1,4 +1,4 @@
-torch=2.12.0.dev20260308+cu128  running 6/6 tests
+torch=2.12.0.dev20260308+cu128  running 8/8 tests
 
 [ RUN  ] test_sym4_matches_pywt
          Sym4 detail filters reproduce pywt.dwt2(mode='zero') coefficient-exactly.
@@ -10,14 +10,15 @@ torch=2.12.0.dev20260308+cu128  running 6/6 tests
 [ RUN  ] test_structural_rewrite_eliminates_backward
          Structural probe graph lowers with zero *_backward ops remaining.
       lowered {'aten::convolution_backward': 37, 'aten::sigmoid_backward': 29, 'aten::native_group_norm_backward': 30, 'aten::_softmax_backward_data': 1} -> {}
-      stats={'conv_bwd': 37, 'gn_bwd': 30, 'softmax_bwd': 1, 'sigmoid_bwd': 29, 'sign': 1, 'detach': 272}
+      stats={'conv_bwd': 37, 'gn_bwd': 30, 'softmax_bwd': 1, 'sigmoid_bwd': 29, 'sign': 1, 'detach': 273}
 [  OK  ]
 
 [ RUN  ] test_rewrite_is_numerically_exact
          Rewritten graph matches the original joint graph to fp32 roundoff.
       output[0] shape=() max_abs_error=0.000e+00 (tol 0.0e+00)
-      output[1] shape=() max_abs_error=0.000e+00 (tol 0.0e+00)
-      output[2] shape=(1, 32, 2, 2) max_abs_error=7.101e-09 (tol 1.0e-07)
+      output[1] shape=(1, 3, 16, 16) max_abs_error=0.000e+00 (tol 0.0e+00)
+      output[2] shape=() max_abs_error=0.000e+00 (tol 0.0e+00)
+      output[3] shape=(1, 32, 2, 2) max_abs_error=7.101e-09 (tol 1.0e-07)
 [  OK  ]
 
 [ RUN  ] test_groupnorm_rank3_lowers
@@ -35,4 +36,16 @@ torch=2.12.0.dev20260308+cu128  running 6/6 tests
       real Decoder: {'aten::convolution_backward': 21, 'aten::native_group_norm_backward': 18, 'aten::_softmax_backward_data': 1} -> {}
 [  OK  ]
 
-PASSED 6/6
+[ RUN  ] test_level3_detector_matches_pywt
+         Level-3 Sym4 trace reproduces pywt.wavedec2(level=3) detail bands.
+      cH3: shape=(14, 14) max_err=4.91e-07
+      cV3: shape=(14, 14) max_err=5.04e-07
+      cD3: shape=(14, 14) max_err=3.96e-07
+[  OK  ]
+
+[ RUN  ] test_joint_outputs_image_and_score
+         Joint graph exposes loss, pred image, detector score, and grad_z.
+      outputs: loss() pred(1, 3, 64, 64) score() grad_z(1, 32, 8, 8)
+[  OK  ]
+
+PASSED 8/8
