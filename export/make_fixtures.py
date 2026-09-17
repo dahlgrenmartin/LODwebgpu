@@ -30,9 +30,10 @@ MODEL_ID = "black-forest-labs/FLUX.2-small-decoder"
 
 
 def stage_m0() -> None:
-    from export.to_onnx import export_joint, write_manifest
+    from export.to_onnx import export_joint, write_manifest, clear_outputs
     from export.reference import dump_reference
     OUT.mkdir(parents=True, exist_ok=True)
+    clear_outputs(OUT)
     export_joint(res=RES, out_dir=OUT, fp16=True, external_data=True, seed=SEED)
     dump_reference(res=RES, out_dir=OUT, seed=SEED)
     write_manifest(OUT, [RES], FIXTURE_ADAM)
@@ -59,9 +60,11 @@ def stage_adam() -> None:
 
 def stage_real() -> None:
     """Everything the demo needs, built from the trained FLUX.2-small checkpoint."""
-    from export.to_onnx import export_joint_real, export_encoder, write_manifest
+    from export.to_onnx import (export_joint_real, export_encoder, write_manifest,
+                                clear_outputs)
     from export.reference import dump_reference_real
     OUT.mkdir(parents=True, exist_ok=True)
+    clear_outputs(OUT)
     export_joint_real(res=RES, out_dir=OUT, fp16=True, external_data=True, seed=SEED)
     dump_reference_real(res=RES, out_dir=OUT, seed=SEED)
     export_encoder(OUT, model_id=MODEL_ID, fp16=True, external_data=True)

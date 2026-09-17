@@ -334,11 +334,11 @@ def finalize(path: Path, fp16: bool, external_data: bool,
     if fp16:
         _to_fp16_initializers(model)
     if external_data:
-        # onnx.save appends to an existing external-data file rather than
-        # truncating it, so re-running an export silently doubles the payload.
-        stale_weights = Path(path).parent / location
-        if stale_weights.exists():
-            stale_weights.unlink()
+        # NOTE: onnx.save appends to an existing external-data file. That is what
+        # lets two resolutions share one weights.bin, so finalize must NOT
+        # truncate it -- doing so invalidates the offsets of the model saved
+        # first. Callers that re-export the same model must clear the directory
+        # themselves, or the file grows on every run (see clear_outputs).
         convert_model_to_external_data(
             model, all_tensors_to_one_file=True, location=location,
             size_threshold=1024, convert_attribute=False)
@@ -401,6 +401,18 @@ def export_encoder(out_dir: Path, model_id: str = None, fp16: bool = False,
         finalize(path, fp16=fp16, external_data=external_data,
                  location="encoder_weights.bin")
     return path
+
+
+def clear_outputs(out_dir: Path) -> int:
+    """Remove generated model artifacts so a re-export cannot append to them."""
+    out_dir = Path(out_dir)
+    removed = 0
+    if out_dir.exists():
+        for pattern in ("*.onnx", "*.onnx.data", "*.bin"):
+            for f in out_dir.glob(pattern):
+                f.unlink()
+                removed += 1
+    return removed
 
 
 def write_manifest(out_dir: Path, resolutions: list, adam: dict) -> Path:

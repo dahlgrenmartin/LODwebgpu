@@ -93,9 +93,9 @@ torch=2.12.0.dev20260308+cu128  running 16/16 tests
 [torch.onnx] Optimize the ONNX graph...
 [torch.onnx] Optimize the ONNX graph... ✅
       146/146 initializers shared, 41 stored fp16
-      graph files [1250, 1250] KiB, weights.bin 54649 KiB
-[ FAIL ] Fail: [ONNXRuntimeError] : 1 : FAIL : Exception during initialization: N:\_work\1\s\onnxruntime\core\optimizer\optimizer_execution_frame.cc:74 onnxruntime::OptimizerExecutionFrame::Info::Info [ONNXRuntimeError] : 1 : FAIL : tensorprotoutils.cc:1766 onnxruntime::utils::GetExtDataFromTensorProto External initializer: expand_9_fp16 offset: 55878464 size to read: 308898 given file_length: 55960802 are out of bounds or can not be read in full.
-
+      graph files [1250, 1250] KiB, weights.bin 109521 KiB
+      fp16 grad_z rel_err=4.10e-02 (accepted cost, budget 6e-2)
+[  OK  ]
 
 [ RUN  ] test_reference_dump_roundtrips
          Golden binary matches the wrapper outputs it was produced from.
@@ -126,4 +126,4 @@ torch=2.12.0.dev20260308+cu128  running 16/16 tests
       real decoder: 27,948,835 params, backward lowered, grad_z finite, |grad|max=1.269e-04
 [  OK  ]
 
-FAILED 1/16: test_fp16_initializers_and_shared_external_data
+PASSED 16/16
