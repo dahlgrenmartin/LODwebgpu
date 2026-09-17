@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types test/optimizerConfig.test.mjs"
+    "test": "node --experimental-strip-types test/optimizerConfig.test.mjs && node --experimental-strip-types test/ortShapes.test.mjs"
   },
   "keywords": [],
   "author": "",
