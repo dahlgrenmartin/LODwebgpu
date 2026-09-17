@@ -140,7 +140,7 @@ def stage_real() -> None:
           f"{report['shards']} = {report['shard_mb']} MB")
     write_manifest(OUT, ORT_SIZES, ADAM_BY_MODEL.get(MODEL_ID, REFERENCE_ADAM),
                    latent_channels=vae.config.latent_channels,
-                   weights=report["shards"])
+                   weights=report["shards"], model=MODEL_ID)
     print(f"real-checkpoint fixtures -> {OUT}  "
           f"[{MODEL_ID}, latent_channels={vae.config.latent_channels}]")
 

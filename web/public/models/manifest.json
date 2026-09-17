@@ -1,4 +1,6 @@
 {
+  "model": "madebyollin/sdxl-vae-fp16-fix",
+  "latentChannels": 4,
   "resolutions": [
     {
       "width": 256,

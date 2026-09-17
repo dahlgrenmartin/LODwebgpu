@@ -28,7 +28,8 @@ def graph_filename(width: int, height: int) -> str:
 
 def write_manifest(out_dir: Path, sizes: list[tuple[int, int]], adam: dict,
                    latent_channels: int = 32,
-                   weights: list[str] | str = "weights.bin") -> Path:
+                   weights: list[str] | str = "weights.bin",
+                   model: str | None = None) -> Path:
     """Write the browser manifest for exact ORT image sizes.
 
     ``sizes`` are image ``(width, height)`` pairs. Latent dimensions are NCHW,
@@ -57,6 +58,11 @@ def write_manifest(out_dir: Path, sizes: list[tuple[int, int]], adam: dict,
         })
 
     manifest = {
+        # Which checkpoint these artifacts came from. Without it the only
+        # clue is the latent channel count, and mixing artifacts from two
+        # models is otherwise silent.
+        "model": model,
+        "latentChannels": latent_channels,
         "resolutions": resolutions,
         # A list: the shared blob is sharded when it would exceed GitHub's
         # 100 MB per-file limit, which SDXL's decoder does on its own.

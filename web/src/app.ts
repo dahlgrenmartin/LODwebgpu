@@ -75,6 +75,13 @@ function readOptimizerConfig() {
   });
 }
 
+function describeModel(): string {
+  const id = manifest?.model;
+  const ch = manifest?.latentChannels ?? manifest?.resolutions?.[0]?.latent?.[1];
+  if (!id) return ch ? `unknown model, ${ch}-channel latent` : 'unknown model';
+  return `${id.split('/').pop()} (${ch}-channel latent)`;
+}
+
 function describeBackend(b: Backend): string {
   if (b.supportedSizes) {
     const sizes = b.supportedSizes.map((s) => `${s.width}x${s.height}`).join(', ');
@@ -113,7 +120,7 @@ async function useBackend(name: BackendName): Promise<void> {
   // known, so its device is watched after prepare(width, height) in run().
   if (!backend.supportedSizes) watchDevice(backend.device);
 
-  els.crop.textContent = describeBackend(backend);
+  els.crop.textContent = `${describeModel()} · ${describeBackend(backend)}`;
   setState('ready', 'Ready — drop an image, choose a file, or use the sample.');
   setControlsEnabled(true);
 }
@@ -166,7 +173,8 @@ async function run(source: Blob): Promise<void> {
     els.before.height = h;
     els.before.getContext('2d')!.putImageData(image.preview, 0, 0);
     els.crop.textContent =
-      `${w}x${h} in, unaltered — no resize, no crop · ${describeBackend(backend)}`;
+      `${w}x${h} in, unaltered — no resize, no crop · ` +
+      `${describeModel()} · ${describeBackend(backend)}`;
 
     setState('encoding', 'Encoding to latent…');
     const latent = await encodeLatent(

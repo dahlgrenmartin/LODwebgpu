@@ -7,6 +7,9 @@ export interface Resolution {
 }
 
 export interface Manifest {
+  /** Checkpoint these artifacts were exported from, e.g. a VAE repo id. */
+  model?: string | null;
+  latentChannels?: number;
   resolutions: Resolution[];
   /** One or more shared weight files; sharded to stay under 100 MB each. */
   weights: string | string[];
