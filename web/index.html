@@ -59,6 +59,7 @@
     color:var(--muted); font-weight:600;
   }
   .stat .v { font-family:var(--mono); font-size:16px; margin-top:4px; }
+  .crop { color:var(--muted); font-family:var(--mono); font-size:11px; margin-bottom:14px; }
   .note { margin-top:14px; color:var(--muted); font-size:12px; line-height:1.6; }
   .warn {
     margin-top:22px; padding:12px 16px; border-radius:10px; font-size:12px;
@@ -94,9 +95,11 @@
   <div id="drop">Drop an image here</div>
 
   <div class="panes">
-    <div class="pane"><h2>Target (your image)</h2><canvas id="before"></canvas></div>
+    <div class="pane"><h2>Target (native-resolution crop)</h2><canvas id="before"></canvas></div>
     <div class="pane"><h2>Decoded from latent</h2><canvas id="after"></canvas></div>
   </div>
+
+  <div id="crop" class="crop">—</div>
 
   <div class="stats">
     <div class="stat"><div class="k">Step</div><div class="v" id="step">—</div></div>

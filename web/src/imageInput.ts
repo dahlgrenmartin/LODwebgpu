@@ -4,13 +4,18 @@ export interface PreparedImage {
   shape: number[];
   /** sRGB bytes for the "before" preview. */
   preview: ImageData;
+  /** Dimensions of the decoded source, before cropping. */
+  sourceSize: { w: number; h: number };
+  /** Top-left of the native-resolution crop within the source. */
+  crop: { x: number; y: number };
 }
 
 /**
- * Decode, square-crop and resize a user-supplied image into decoder input range.
+ * Decode a user-supplied image and take a native-resolution `size` x `size` crop.
  *
- * `imageOrientation: 'from-image'` applies EXIF rotation, which phone photos
- * rely on; without it portrait shots arrive sideways.  Alpha is dropped.
+ * No resampling happens anywhere in this function: the crop is a 1:1 pixel copy.
+ * `imageOrientation: 'from-image'` applies EXIF rotation, which phone photos rely
+ * on; without it portrait shots arrive sideways.  Alpha is dropped.
  */
 export async function prepareImage(
   source: Blob,
@@ -23,17 +28,32 @@ export async function prepareImage(
     throw new Error(`could not decode that file as an image (${(e as Error).message})`);
   }
 
-  // Center-crop to a square before scaling, so nothing is stretched.
-  const side = Math.min(bitmap.width, bitmap.height);
-  const sx = (bitmap.width - side) / 2;
-  const sy = (bitmap.height - side) / 2;
+  // NEVER resample.  The Sym4 level-1 loss and the level-3 detector both read
+  // high-frequency detail coefficients; any rescale rewrites exactly those, so a
+  // score computed on a resized image measures the resampler rather than the
+  // image.  We take a native-resolution crop instead - the retained pixels pass
+  // through bit-exact.
+  if (bitmap.width < size || bitmap.height < size) {
+    const w = bitmap.width;
+    const h = bitmap.height;
+    bitmap.close();
+    throw new Error(
+      `Image is ${w}x${h}, smaller than the ${size}x${size} window. Upscaling ` +
+      `would fabricate detail the wavelet detector reads as signal, so it is ` +
+      `refused - please use an image at least ${size}x${size}.`);
+  }
+
+  const sx = Math.floor((bitmap.width - size) / 2);
+  const sy = Math.floor((bitmap.height - size) / 2);
 
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('2D canvas context unavailable');
-  ctx.drawImage(bitmap, sx, sy, side, side, 0, 0, size, size);
+  // Source rect and destination rect are the same size => 1:1 pixel copy.
+  ctx.drawImage(bitmap, sx, sy, size, size, 0, 0, size, size);
+  const sourceSize = { w: bitmap.width, h: bitmap.height };
   bitmap.close();
 
   const preview = ctx.getImageData(0, 0, size, size);
@@ -45,7 +65,7 @@ export async function prepareImage(
     data[n + i] = (px[i * 4 + 1] / 255) * 2 - 1;      // G
     data[2 * n + i] = (px[i * 4 + 2] / 255) * 2 - 1;  // B
   }
-  return { data, shape: [1, 3, size, size], preview };
+  return { data, shape: [1, 3, size, size], preview, sourceSize, crop: { x: sx, y: sy } };
 }
 
 /**
