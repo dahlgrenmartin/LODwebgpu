@@ -465,6 +465,31 @@ def test_reference_dump_roundtrips():
         print(f"      {len(named)} tensors, {raw.size} floats total")
 
 
+@test
+def test_encoder_export_dynamic_shapes():
+    """Encoder exports once and accepts both demo resolutions."""
+    try:
+        import onnxruntime as ort
+        import numpy as np
+    except ImportError:
+        print("      SKIP (onnxruntime not installed)")
+        return
+    import tempfile
+    import numpy as np
+    sys.path.insert(0, str(ROOT))
+    from export.to_onnx import export_encoder
+
+    with tempfile.TemporaryDirectory() as td:
+        path = export_encoder(Path(td))
+        sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        for size in (128, 256):
+            img = np.random.randn(1, 3, size, size).astype(np.float32)
+            (out,) = sess.run(None, {"image": img})
+            assert out.shape == (1, 32, size // 8, size // 8), f"{size}: {out.shape}"
+            assert np.isfinite(out).all(), f"{size}: non-finite latent"
+            print(f"      {size}x{size} -> {out.shape}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only run tests whose name contains this")

@@ -144,7 +144,7 @@ def finalize(path: Path, fp16: bool, external_data: bool) -> None:
     import onnx
     from onnx.external_data_helper import convert_model_to_external_data
 
-    model = onnx.load(str(path))
+    model = onnx.load(str(path))          # pulls in any exporter-written sidecar
     if fp16:
         _to_fp16_initializers(model)
     if external_data:
@@ -152,6 +152,62 @@ def finalize(path: Path, fp16: bool, external_data: bool) -> None:
             model, all_tensors_to_one_file=True, location="weights.bin",
             size_threshold=1024, convert_attribute=False)
     onnx.save(model, str(path))
+
+    # The dynamo exporter writes its own fp32 sidecar (<model>.onnx.data).  Once
+    # the weights live in our shared weights.bin nothing references it, and it
+    # would otherwise sit in the served directory as ~112 MB of dead payload.
+    if external_data:
+        stale = Path(str(path) + ".data")
+        if stale.exists():
+            stale.unlink()
+
+
+class _EncoderMean(torch.nn.Module):
+    """Encoder -> posterior mean.  Deterministic: no sampling, so runs repeat."""
+
+    def __init__(self, encoder, quant_conv=None, latent_channels: int = 32):
+        super().__init__()
+        self.encoder = encoder
+        self.quant_conv = quant_conv
+        self.latent_channels = latent_channels
+
+    def forward(self, image):
+        h = self.encoder(image)
+        if self.quant_conv is not None:
+            h = self.quant_conv(h)
+        return h[:, : self.latent_channels]      # mean half of (mean, logvar)
+
+
+def export_encoder(out_dir: Path, model_id: str = None) -> Path:
+    from diffusers.models.autoencoders.vae import Encoder
+    if model_id:
+        from diffusers import AutoencoderKLFlux2
+        vae = AutoencoderKLFlux2.from_pretrained(
+            model_id, torch_dtype=torch.float32).eval()
+        module = _EncoderMean(vae.encoder, getattr(vae, "quant_conv", None),
+                              vae.config.latent_channels)
+    else:
+        # double_z=True makes conv_out emit 2*out_channels = (mean, logvar).
+        enc = Encoder(in_channels=3, out_channels=32,
+                      down_block_types=("DownEncoderBlock2D",) * 4,
+                      block_out_channels=(96, 192, 384, 384),
+                      layers_per_block=2, norm_num_groups=32,
+                      double_z=True).eval()
+        module = _EncoderMean(enc, None, 32)
+    for p in module.parameters():
+        p.requires_grad_(False)
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "encoder.onnx"
+    torch.onnx.export(
+        module, (torch.randn(1, 3, 128, 128),), str(path),
+        input_names=["image"], output_names=["latent_mean"],
+        dynamic_axes={"image": {2: "h", 3: "w"},
+                      "latent_mean": {2: "lh", 3: "lw"}},
+        opset_version=18, dynamo=True,
+    )
+    return path
 
 
 def write_manifest(out_dir: Path, resolutions: list, adam: dict) -> Path:
