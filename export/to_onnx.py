@@ -413,11 +413,14 @@ def export_encoder(out_dir: Path, model_id: str = None, fp16: bool = False,
 
 
 def clear_outputs(out_dir: Path) -> int:
-    """Remove generated model artifacts so a re-export cannot append to them."""
+    """Remove generated model artifacts so a re-export cannot mix stale files."""
     out_dir = Path(out_dir)
     removed = 0
     if out_dir.exists():
-        for pattern in ("*.onnx", "*.onnx.data", "*.bin"):
+        # lod_graph.json and lod_graph.weights.bin are one logical asset. Removing
+        # only the binary leaves a valid-looking descriptor that the WGSL backend
+        # will follow into a 404 response.
+        for pattern in ("*.onnx", "*.onnx.data", "*.bin", "lod_graph.json"):
             for f in out_dir.glob(pattern):
                 f.unlink()
                 removed += 1
