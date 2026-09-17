@@ -18,7 +18,7 @@ torch=2.12.0.dev20260308+cu128  running 16/16 tests
       output[0] shape=() max_abs_error=0.000e+00 (tol 0.0e+00)
       output[1] shape=(1, 3, 16, 16) max_abs_error=0.000e+00 (tol 0.0e+00)
       output[2] shape=() max_abs_error=0.000e+00 (tol 0.0e+00)
-      output[3] shape=(1, 32, 2, 2) max_abs_error=7.101e-09 (tol 1.0e-07)
+      output[3] shape=(1, 32, 2, 2) max_abs_error=6.024e-09 (tol 1.0e-07)
 [  OK  ]
 
 [ RUN  ] test_groupnorm_rank3_lowers
@@ -50,7 +50,7 @@ torch=2.12.0.dev20260308+cu128  running 16/16 tests
 
 [ RUN  ] test_rewrite_repopulates_meta
          Every rewritten node carries meta['val'] so export can consume the graph.
-      all 1158 call_function nodes have meta['val']
+      all 1114 call_function nodes have meta['val']
 [  OK  ]
 
 [ RUN  ] test_export_wrapper_matches_graph
@@ -70,8 +70,8 @@ torch=2.12.0.dev20260308+cu128  running 16/16 tests
 [torch.onnx] Optimize the ONNX graph... ✅
       loss: rel_err=3.09e-07 shape=()
       pred: rel_err=4.20e-06 shape=(1, 3, 256, 256)
-      score: rel_err=9.49e-07 shape=()
-      grad_z: rel_err=6.86e-06 shape=(1, 32, 32, 32)
+      score: rel_err=7.77e-07 shape=()
+      grad_z: rel_err=6.80e-06 shape=(1, 32, 32, 32)
 [  OK  ]
 
 [ RUN  ] test_fp16_initializers_and_shared_external_data
@@ -92,10 +92,10 @@ torch=2.12.0.dev20260308+cu128  running 16/16 tests
 [torch.onnx] Translate the graph into ONNX... ✅
 [torch.onnx] Optimize the ONNX graph...
 [torch.onnx] Optimize the ONNX graph... ✅
-      139/139 initializers shared, 41 stored fp16
-      graph files [1283, 1284] KiB, weights.bin 109527 KiB
-      fp16 grad_z rel_err=4.16e-02 (accepted cost, budget 6e-2)
-[  OK  ]
+      146/146 initializers shared, 41 stored fp16
+      graph files [1250, 1250] KiB, weights.bin 54649 KiB
+[ FAIL ] Fail: [ONNXRuntimeError] : 1 : FAIL : Exception during initialization: N:\_work\1\s\onnxruntime\core\optimizer\optimizer_execution_frame.cc:74 onnxruntime::OptimizerExecutionFrame::Info::Info [ONNXRuntimeError] : 1 : FAIL : tensorprotoutils.cc:1766 onnxruntime::utils::GetExtDataFromTensorProto External initializer: expand_9_fp16 offset: 55878464 size to read: 308898 given file_length: 55960802 are out of bounds or can not be read in full.
+
 
 [ RUN  ] test_reference_dump_roundtrips
          Golden binary matches the wrapper outputs it was produced from.
@@ -126,4 +126,4 @@ torch=2.12.0.dev20260308+cu128  running 16/16 tests
       real decoder: 27,948,835 params, backward lowered, grad_z finite, |grad|max=1.269e-04
 [  OK  ]
 
-PASSED 16/16
+FAILED 1/16: test_fp16_initializers_and_shared_external_data

@@ -103,6 +103,119 @@ def export_joint(res: int, out_dir: Path, fp16: bool = False,
     return path
 
 
+def patch_upsamplers_for_dynamic(module) -> int:
+    """Express Diffusers' nearest x2 upsample as view -> expand -> reshape.
+
+    F.interpolate(mode="nearest") decomposes to aten._unsafe_index with computed
+    index tensors, and those cannot broadcast under symbolic shapes -- dynamic
+    capture dies with "SymIntArrayRef expected to contain only concrete
+    integers".  The view/expand/reshape formulation is bit-identical for an
+    integer x2 nearest upsample and is shape-generic, which is exactly the trick
+    the structural probe already uses.
+    """
+    from diffusers.models.upsampling import Upsample2D
+
+    def forward(self, hidden_states, output_size=None, *args, **kwargs):
+        assert hidden_states.shape[1] == self.channels
+        if self.norm is not None:
+            hidden_states = self.norm(
+                hidden_states.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        if self.use_conv_transpose:
+            return self.conv(hidden_states)
+        if self.interpolate:
+            if output_size is not None:
+                raise NotImplementedError(
+                    'explicit output_size is not supported on the dynamic path')
+            n, c, h, w = hidden_states.shape
+            hidden_states = (hidden_states
+                             .view(n, c, h, 1, w, 1)
+                             .expand(n, c, h, 2, w, 2)
+                             .reshape(n, c, h * 2, w * 2))
+        if self.use_conv:
+            hidden_states = (self.conv(hidden_states) if self.name == 'conv'
+                             else self.Conv2d_0(hidden_states))
+        return hidden_states
+
+    patched = 0
+    for m in module.modules():
+        if isinstance(m, Upsample2D):
+            m.forward = forward.__get__(m, type(m))
+            patched += 1
+    return patched
+
+
+def build_graph_dynamic(res: int = 16, seed: int = 0, real: bool = True,
+                        model_id: str = "black-forest-labs/FLUX.2-small-decoder"):
+    """Capture the joint graph with symbolic H/W so one ONNX serves any size.
+
+    The rewrite is shape-static only in the sense that it reads meta['val'];
+    when those are SymInts it still lowers, because every decoder convolution is
+    stride 1 and its output_padding collapses to 0 at any resolution.
+    """
+    from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+    torch.manual_seed(seed)
+    if real:
+        vae = load_real_vae(model_id)
+        m = RealJointLOD(vae).eval()
+        n_patched = patch_upsamplers_for_dynamic(m)
+        if not n_patched:
+            raise RuntimeError('no Upsample2D found to patch for dynamic capture')
+        latent_c, out_c = vae.config.latent_channels, vae.config.out_channels
+    else:
+        m = probe.JointLOD("sym4").eval()
+        latent_c, out_c = 32, 3
+
+    # Real tensors created OUTSIDE the fake mode: from_tensor only assigns fresh
+    # symbols when it is handed a concrete tensor.
+    rz = torch.empty(1, latent_c, res, res, requires_grad=True)
+    rt = torch.empty(1, out_c, res * 8, res * 8)
+    mode = FakeTensorMode(shape_env=ShapeEnv(), allow_non_fake_inputs=True)
+    with mode:
+        fz = mode.from_tensor(rz, static_shapes=False)
+        # Derive the target's spatial dims from the latent's rather than giving
+        # them independent symbols.  The decoder upsamples by exactly 8, and
+        # encoding that relation lets the shape env prove H is a multiple of 8 --
+        # which is what makes the stride-2 wavelet convolution's output_padding a
+        # constant instead of a parity-dependent expression.
+        ft = torch.empty(1, out_c, fz.shape[2] * 8, fz.shape[3] * 8)
+        gm, sig = aot_export_module(m, (fz, ft), trace_joint=True, output_loss_index=0)
+    rw.rewrite(gm)
+    wrapper = ExportWrapper(gm, sig, m).eval()
+    z = torch.randn(1, latent_c, res, res)
+    t = torch.randn(1, out_c, res * 8, res * 8)
+    return gm, wrapper, z, t
+
+
+def export_joint_dynamic(out_dir: Path, res: int = 16, fp16: bool = False,
+                         external_data: bool = False, seed: int = 0,
+                         max_latent: int = 128, real: bool = True) -> Path:
+    """One graph for every image size up to max_latent*8 on each side."""
+    from torch.export import Dim
+
+    gm, wrapper, z, t = build_graph_dynamic(res=res, seed=seed, real=real)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "lod_joint_dynamic.onnx"
+
+    zh = Dim("zh", min=2, max=max_latent)
+    zw = Dim("zw", min=2, max=max_latent)
+    torch.onnx.export(
+        wrapper, (z, t), str(path),
+        input_names=INPUT_NAMES, output_names=OUTPUT_NAMES,
+        dynamic_shapes={"z": {2: zh, 3: zw},
+                        "target": {2: 8 * zh, 3: 8 * zw}},
+        opset_version=18, dynamo=True,
+    )
+    if fp16 or external_data:
+        finalize(path, fp16=fp16, external_data=external_data)
+    return path
+
+
+def RealJointLOD_placeholder():  # pragma: no cover
+    pass
+
+
 class RealJointLOD(torch.nn.Module):
     """The real FLUX.2-small VAE decoder wired to the LOD loss and detector.
 
@@ -221,6 +334,11 @@ def finalize(path: Path, fp16: bool, external_data: bool,
     if fp16:
         _to_fp16_initializers(model)
     if external_data:
+        # onnx.save appends to an existing external-data file rather than
+        # truncating it, so re-running an export silently doubles the payload.
+        stale_weights = Path(path).parent / location
+        if stale_weights.exists():
+            stale_weights.unlink()
         convert_model_to_external_data(
             model, all_tensors_to_one_file=True, location=location,
             size_threshold=1024, convert_attribute=False)

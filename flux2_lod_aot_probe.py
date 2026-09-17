@@ -133,6 +133,22 @@ class Flux2SmallDecoder(nn.Module):
         return x
 
 
+def zero_pad2d(x: torch.Tensor, left: int, right: int, top: int, bottom: int):
+    """Zero-pad without aten.constant_pad_nd.
+
+    constant_pad_nd's meta function does not propagate SymInts: a symbolic
+    [1,3,H,W] comes out concrete, which specializes every downstream shape and
+    breaks dynamic-shape capture.  cat with new_zeros keeps the symbols.
+    """
+    n, c, h, w = x.shape
+    if left or right:
+        x = torch.cat([x.new_zeros(n, c, h, left), x, x.new_zeros(n, c, h, right)], dim=3)
+    n, c, h, w = x.shape
+    if top or bottom:
+        x = torch.cat([x.new_zeros(n, c, top, w), x, x.new_zeros(n, c, bottom, w)], dim=2)
+    return x
+
+
 # Symlet-4 analysis filters, exactly pywt.Wavelet('sym4').dec_lo / .dec_hi in
 # decomposition order.  F.conv2d is cross-correlation while the DWT is a true
 # convolution, so the assembled 2-D kernels are spatially reversed below.
@@ -169,9 +185,12 @@ class Sym4Level1Loss(nn.Module):
     def forward(self, residual):
         # Zero extension, pywt "zero" mode.  pad=6 (not 7) keeps the odd
         # samples of the full convolution, matching pywt's subsample phase.
-        x = F.pad(residual, (6, 6, 6, 6), mode="constant", value=0.0)
+        x = zero_pad2d(residual, 6, 6, 6, 6)
         d = F.conv2d(x, self.kernels, stride=2, groups=3)
-        return d.abs().mean()
+        # sum/numel rather than mean(): mean's backward broadcasts the scalar
+        # gradient with a materialised expand whose target shape is baked at
+        # trace time, which breaks dynamic-shape capture.
+        return d.abs().sum() / d.numel()
 
 
 class Sym4Level3Detector(nn.Module):
@@ -197,31 +216,37 @@ class Sym4Level3Detector(nn.Module):
         ], dim=0)[:, None, :, :]
         bank = bank.flip(-1, -2).contiguous()
         self.register_buffer("bank", bank)
-        # Pre-repeated grouped-conv weight.  Doing this here rather than in
-        # forward keeps aten::repeat out of the exported graph.
-        self.register_buffer("bank_rep", bank.repeat(channels, 1, 1, 1).contiguous())
+        # Pre-repeated per-filter grouped-conv weights.  Building these here
+        # rather than in forward keeps aten::repeat out of the exported graph.
+        for name, k in (("w_a", 0), ("w_h", 1), ("w_v", 2), ("w_d", 3)):
+            self.register_buffer(name, bank[k:k + 1].repeat(channels, 1, 1, 1).contiguous())
         self.channels = channels
 
     def bands(self, x, bank=None):
-        """Return the three level-3 detail bands, each [N, C, h, w]."""
-        n, c = x.shape[0], x.shape[1]
-        # [4C,1,8,8]: group g -> input channel g, output channels 4g+{A,H,V,D}
+        """Return the three level-3 detail bands, each [N, C, h, w].
+
+        One grouped conv per filter rather than a single 4-output conv plus a
+        reshape: the reshape would bake the traced spatial size and break
+        dynamic-shape capture, and this also skips the detail bands at levels 1
+        and 2, which were previously computed and thrown away.
+        """
+        c = x.shape[1]
         if bank is None and c == self.channels:
-            w = self.bank_rep
+            ws = (self.w_a, self.w_h, self.w_v, self.w_d)
         else:
-            w = (self.bank if bank is None else bank).repeat(c, 1, 1, 1)
-        out5 = None
-        for _ in range(3):
+            b = self.bank if bank is None else bank
+            ws = tuple(b[k:k + 1].repeat(c, 1, 1, 1) for k in range(4))
+
+        details = None
+        for level in range(3):
             # Asymmetric (6,7): left pad 6 aligns the subsample phase with pywt,
             # right pad 7 gives floor((N+k-1)/2) coefficients for ODD N too.
-            # Levels 2 and 3 receive odd lengths, where a symmetric pad is short
-            # by one; for even N the two are identical, which is why the level-1
-            # loss can keep (6,6,6,6).
-            padded = F.pad(x, (6, 7, 6, 7), mode="constant", value=0.0)
-            out = F.conv2d(padded, w, stride=2, groups=c)
-            out5 = out.view(n, c, 4, out.shape[-2], out.shape[-1])
-            x = out5[:, :, 0]                      # cA feeds the next level
-        return [out5[:, :, k] for k in (1, 2, 3)]
+            padded = zero_pad2d(x, 6, 7, 6, 7)
+            if level == 2:
+                details = [F.conv2d(padded, ws[k], stride=2, groups=c)
+                           for k in (1, 2, 3)]
+            x = F.conv2d(padded, ws[0], stride=2, groups=c)   # cA -> next level
+        return details
 
     def forward(self, x):
         h, v, d = self.bands(x)

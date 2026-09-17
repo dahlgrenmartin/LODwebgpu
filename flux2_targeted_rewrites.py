@@ -9,6 +9,30 @@ spec=importlib.util.spec_from_file_location('probe', _probe_path)
 probe=importlib.util.module_from_spec(spec); spec.loader.exec_module(probe)
 
 
+def _const_int(v, node):
+    """Coerce a possibly-symbolic size expression to a plain int.
+
+    Under a dynamic-shape capture the output_padding terms arrive as SymInts.
+    For every stride-1 convolution the expression algebraically collapses to 0
+    (base == input size), so it is constant even though its type is symbolic,
+    and ONNX needs a literal for the ConvTranspose attribute.  Anything that is
+    genuinely shape-dependent is refused loudly rather than silently guarded to
+    whatever the tracing example happened to be.
+    """
+    if isinstance(v, int):
+        return v
+    # int(SymInt) would *guard* a shape-dependent expression, silently baking the
+    # traced size into the graph and producing a model that is quietly wrong at
+    # every other resolution.  Only accept expressions with no free symbols.
+    expr = getattr(getattr(v, 'node', None), 'expr', None)
+    if expr is not None and not expr.free_symbols:
+        return int(expr)
+    raise RuntimeError(
+        f'output_padding for {node} is shape-dependent ({v}); it cannot be a '
+        f'static ONNX attribute, and guarding it would bake the traced size. '
+        f'Only stride-1 convolutions are dynamic-safe.')
+
+
 def _val(n): return getattr(n,'meta',{}).get('val')
 def _shape(n):
     v=_val(n); return tuple(v.shape) if hasattr(v,'shape') else None
@@ -46,9 +70,17 @@ def lower_conv_backward_input(gm):
         if len(p)==1:p*=2
         if len(d)==1:d*=2
         kh,kw=wsh[-2:]
-        base_h=(gsh[-2]-1)*s[0]-2*p[0]+d[0]*(kh-1)+1
-        base_w=(gsh[-1]-1)*s[1]-2*p[1]+d[1]*(kw-1)+1
-        opad=[ish[-2]-base_h, ish[-1]-base_w]
+        if s[0]==1 and s[1]==1:
+            # For stride 1 the algebra collapses exactly: the forward output is
+            # gsh = ish + 2p - d*(k-1), so base == ish and output_padding is 0 at
+            # every resolution.  Taking it analytically keeps the value a literal
+            # under dynamic shapes, where the symbolic form is 's - s**2//s' and
+            # sympy will not simplify integer floor division.
+            opad=[0,0]
+        else:
+            base_h=(gsh[-2]-1)*s[0]-2*p[0]+d[0]*(kh-1)+1
+            base_w=(gsh[-1]-1)*s[1]-2*p[1]+d[1]*(kw-1)+1
+            opad=[_const_int(ish[-2]-base_h, cb), _const_int(ish[-1]-base_w, cb)]
         with g.inserting_before(cb):
             dx=g.call_function(torch.ops.aten.convolution.default,
                 args=(grad,weight,None,s,p,d,True,opad,groups))
@@ -67,7 +99,12 @@ def lower_group_norm_backward_input(gm):
         if not ish or len(ish)<3:
             raise RuntimeError(f'static rank>=3 [N,C,...] shape required, got {ish}')
         cpg=C//G
-        M=cpg*HxW
+        # Under dynamic shapes HxW arrives as a graph Node, so M is not an int.
+        # The formula does not actually need it: s1/M and s2/M are exactly the
+        # means over the group axis, so using mean.dim instead of sum + divide
+        # removes every dependence on M and works at any resolution.
+        dynamic = not isinstance(HxW, int)
+        M = None if dynamic else cpg*HxW
         # N, C, HxW and G arrive as explicit op args, so the formula itself is
         # rank-agnostic; only the affine broadcast depends on the input rank.
         # Diffusers' AttnProcessor normalizes [N,C,HW] (rank 3), the conv path
@@ -79,21 +116,21 @@ def lower_group_norm_backward_input(gm):
             else:
                 w4=g.call_function(torch.ops.aten.view.default,args=(weight,wshape))
                 dyg4=g.call_function(torch.ops.aten.mul.Tensor,args=(grad,w4))
-            dyg=g.call_function(torch.ops.aten.view.default,args=(dyg4,[N,G,M]))
-            xg=g.call_function(torch.ops.aten.view.default,args=(inp,[N,G,M]))
+            gshape=[N,G,-1] if dynamic else [N,G,M]
+            dyg=g.call_function(torch.ops.aten.view.default,args=(dyg4,gshape))
+            xg=g.call_function(torch.ops.aten.view.default,args=(inp,gshape))
             mu=g.call_function(torch.ops.aten.unsqueeze.default,args=(mean,-1))
             rs=g.call_function(torch.ops.aten.unsqueeze.default,args=(rstd,-1))
             xc=g.call_function(torch.ops.aten.sub.Tensor,args=(xg,mu))
             xhat=g.call_function(torch.ops.aten.mul.Tensor,args=(xc,rs))
-            s1=g.call_function(torch.ops.aten.sum.dim_IntList,args=(dyg,[2],True))
+            # dx = rstd * (dyg - mean(dyg) - xhat * mean(dyg*xhat))
+            m1=g.call_function(torch.ops.aten.mean.dim,args=(dyg,[2],True))
             prod=g.call_function(torch.ops.aten.mul.Tensor,args=(dyg,xhat))
-            s2=g.call_function(torch.ops.aten.sum.dim_IntList,args=(prod,[2],True))
-            term0=g.call_function(torch.ops.aten.mul.Scalar,args=(dyg,M))
-            term1=g.call_function(torch.ops.aten.sub.Tensor,args=(term0,s1))
-            xhs2=g.call_function(torch.ops.aten.mul.Tensor,args=(xhat,s2))
-            term2=g.call_function(torch.ops.aten.sub.Tensor,args=(term1,xhs2))
-            rsm=g.call_function(torch.ops.aten.div.Scalar,args=(rs,M))
-            dxg=g.call_function(torch.ops.aten.mul.Tensor,args=(rsm,term2))
+            m2=g.call_function(torch.ops.aten.mean.dim,args=(prod,[2],True))
+            t1=g.call_function(torch.ops.aten.sub.Tensor,args=(dyg,m1))
+            xhm2=g.call_function(torch.ops.aten.mul.Tensor,args=(xhat,m2))
+            t2=g.call_function(torch.ops.aten.sub.Tensor,args=(t1,xhm2))
+            dxg=g.call_function(torch.ops.aten.mul.Tensor,args=(rs,t2))
             dx=g.call_function(torch.ops.aten.view.default,args=(dxg,list(ish)))
         _replace_tuple0(g,bn,dx)
     return len(nodes)
